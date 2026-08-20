@@ -154,9 +154,10 @@ nav.tabbar{
   backdrop-filter:saturate(180%) blur(16px);
   -webkit-backdrop-filter:saturate(180%) blur(16px);
   border-top:1px solid var(--border);
-  /* hauteur alignée sur une barre d'onglets iOS : 49 pt de contenu + zone sûre.
-     max() garde une marge basse minimale sur les appareils sans zone sûre. */
-  padding:2px 8px max(4px, var(--safe-b));
+  /* Barre abaissée : on ne réserve qu'une fraction de la zone sûre du bas.
+     Les onglets descendent plus près du bord, tout en restant au-dessus de
+     la barre d'accueil. max() garantit une marge sur les appareils sans zone sûre. */
+  padding:2px 8px max(6px, calc(var(--safe-b) * 0.55));
 }
 .tabbar-inner{max-width:760px;margin:0 auto;display:grid;grid-template-columns:repeat(4,1fr);gap:4px}
 .tab{
