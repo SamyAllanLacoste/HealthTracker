@@ -49,6 +49,7 @@
   --shadow:0 1px 2px rgba(11,11,11,.05), 0 8px 24px rgba(11,11,11,.05);
   --safe-b: env(safe-area-inset-bottom, 0px);
   --safe-t: env(safe-area-inset-top, 0px);
+  --tab-safe: .35;   /* fraction de la zone sûre basse réservée sous les onglets */
 }
 @media (prefers-color-scheme: dark){
   :root:not([data-theme="light"]){
@@ -93,7 +94,10 @@ html{
 /* Coque applicative : la page ne défile pas, seul le contenu défile.
    Supprime le rebond, le tiré-pour-rafraîchir et le glissement latéral. */
 body{
-  position:fixed; inset:0;
+  position:fixed; top:0; left:0; right:0; bottom:0;
+  /* --app-h est posé en JS depuis la hauteur réelle du viewport : garantit que
+     la coque remplit l'écran même quand iOS renvoie une hauteur inattendue. */
+  height:var(--app-h, auto);
   display:flex; flex-direction:column;
   overflow:hidden;
   font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
@@ -154,10 +158,9 @@ nav.tabbar{
   backdrop-filter:saturate(180%) blur(16px);
   -webkit-backdrop-filter:saturate(180%) blur(16px);
   border-top:1px solid var(--border);
-  /* Barre abaissée : on ne réserve qu'une fraction de la zone sûre du bas.
-     Les onglets descendent plus près du bord, tout en restant au-dessus de
-     la barre d'accueil. max() garantit une marge sur les appareils sans zone sûre. */
-  padding:2px 8px max(6px, calc(var(--safe-b) * 0.55));
+  /* Marge basse réglable depuis Profil : on ne réserve qu'une fraction de la
+     zone sûre. max() garantit un minimum sur les appareils sans zone sûre. */
+  padding:2px 8px max(4px, calc(var(--safe-b) * var(--tab-safe)));
 }
 .tabbar-inner{max-width:760px;margin:0 auto;display:grid;grid-template-columns:repeat(4,1fr);gap:4px}
 .tab{
@@ -587,6 +590,16 @@ table.data td.neg{color:var(--critical);font-weight:600}
         <div class="hint" id="tefHint"></div>
       </div>
 
+      <div class="field">
+        <label>Position de la barre d'onglets</label>
+        <div class="seg" id="segTabSafe">
+          <button data-v="0.1" aria-pressed="false">Basse</button>
+          <button data-v="0.35" aria-pressed="true">Moyenne</button>
+          <button data-v="0.7" aria-pressed="false">Haute</button>
+        </div>
+        <div class="hint" id="tabSafeHint"></div>
+      </div>
+
       <div class="field" style="margin-bottom:0">
         <label>Calcul des kcal de séance sans valeur saisie</label>
         <div class="seg" id="segMet">
@@ -624,6 +637,12 @@ table.data td.neg{color:var(--critical);font-weight:600}
         <p style="margin:0"><b style="color:var(--ink)">Graisse théorique</b> = déficit cumulé ÷ 7700 kcal/kg.</p>
       </div>
     </div>
+    <div class="card">
+      <div class="card-head"><h3>Diagnostic d'affichage</h3></div>
+      <div id="displayDiag"></div>
+      <p class="disclaimer" style="padding-top:8px">Utile si la mise en page ne tombe pas juste sur ton appareil : ces valeurs indiquent ce que le système déclare à l'application.</p>
+    </div>
+
     <p class="disclaimer" id="appVersion"></p>
   </section>
 
@@ -715,7 +734,8 @@ const DEFAULT_SETTINGS = {
   stepsGoal: 10000,
   trainGoal: 5,
   metNet: true,
-  theme: "auto"
+  theme: "auto",
+  tabSafe: 0.35        /* fraction de la zone sûre basse réservée sous les onglets */
 };
 
 const MEAL_TYPES = [
@@ -2248,6 +2268,26 @@ function renderProfil() {
   $("#pBmr").textContent = fmt(bmrMifflin(s.sexe, w, s.taille, s.age)) + " kcal/jour";
   $("#pProt").textContent = `${fmt(s.protMin * w)} – ${fmt(s.protMax * w)} g/jour`;
 
+  /* — position de la barre d'onglets — */
+  $$("#segTabSafe button").forEach(b => b.setAttribute("aria-pressed", String(Math.abs(+b.dataset.v - s.tabSafe) < 0.01)));
+  const tb = $("nav.tabbar").getBoundingClientRect();
+  $("#tabSafeHint").textContent =
+    `Marge réservée sous les onglets pour la barre d'accueil. Hauteur actuelle de la barre : ${r0(tb.height)} px.`;
+
+  /* — diagnostic d'affichage — */
+  const env = readSafeAreas();
+  const standalone = window.matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+  const shellBottom = r0(tb.bottom);
+  $("#displayDiag").innerHTML =
+    kv("Mode", standalone ? "application installée" : "onglet de navigateur") +
+    kv("Écran", `${screen.width} × ${screen.height}`) +
+    kv("Fenêtre", `${window.innerWidth} × ${window.innerHeight}`) +
+    kv("Viewport visuel", window.visualViewport ? `${r0(window.visualViewport.width)} × ${r0(window.visualViewport.height)}` : "non disponible") +
+    kv("Zone sûre haut / bas", `${env.top} / ${env.bottom}`) +
+    kv("Barre d'onglets", `${r0(tb.height)} px de haut`) +
+    kv("Bas de barre vs fenêtre", `${shellBottom} / ${window.innerHeight} px`,
+       Math.abs(shellBottom - window.innerHeight) <= 1 ? "pos" : "neg");
+
   const keys = Object.keys(DB.weights).sort().reverse();
   $("#weightHistory").innerHTML = keys.length
     ? keys.slice(0, 40).map((k, i) => {
@@ -2451,6 +2491,25 @@ function applyTheme() {
   else document.documentElement.setAttribute("data-theme", t);
   const meta = document.querySelector('meta[name="theme-color"]');
   if (meta) meta.setAttribute("content", getComputedStyle(document.documentElement).getPropertyValue("--page").trim() || "#0d0d0d");
+}
+
+/* valeurs réelles des zones sûres déclarées par le système */
+function readSafeAreas() {
+  const p = document.createElement("div");
+  p.style.cssText = "position:fixed;top:0;left:0;width:0;height:0;visibility:hidden;" +
+    "padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)";
+  document.body.appendChild(p);
+  const cs = getComputedStyle(p);
+  const out = { top: cs.paddingTop || "0px", bottom: cs.paddingBottom || "0px" };
+  p.remove();
+  return out;
+}
+/* la coque épouse exactement la hauteur réelle de la fenêtre */
+function fitViewport() {
+  document.documentElement.style.setProperty("--app-h", window.innerHeight + "px");
+}
+function applyTabSafe() {
+  document.documentElement.style.setProperty("--tab-safe", String(DB.settings.tabSafe));
 }
 
 function setSteps(v) {
@@ -2661,6 +2720,11 @@ function wire() {
     const b = e.target.closest("[data-m]"); if (!b) return;
     DB.settings.tefMethod = b.dataset.m; persist(); renderProfil();
   });
+  $("#segTabSafe").addEventListener("click", e => {
+    const b = e.target.closest("[data-v]"); if (!b) return;
+    DB.settings.tabSafe = num(b.dataset.v, 0.35);
+    persist(); applyTabSafe(); renderProfil();
+  });
   $("#segMet").addEventListener("click", e => {
     const b = e.target.closest("[data-net]"); if (!b) return;
     DB.settings.metNet = b.dataset.net === "1"; persist(); renderProfil();
@@ -2744,9 +2808,13 @@ function wire() {
     persist(true);
   }
   applyTheme();
+  applyTabSafe();
+  fitViewport();
   lockViewport();
   wire();
   render();
+  window.addEventListener("resize", fitViewport);
+  window.addEventListener("orientationchange", () => setTimeout(fitViewport, 150));
 
   /* service worker (uniquement en http/https) */
   if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
