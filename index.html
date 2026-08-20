@@ -2,8 +2,9 @@
 <html lang="fr">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content">
 <meta name="theme-color" content="#0d0d0d">
+<meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Health Tracker">
@@ -83,14 +84,30 @@
    ============================================================ */
 *,*::before,*::after{box-sizing:border-box}
 html,body{margin:0;padding:0}
-html{-webkit-text-size-adjust:100%}
+html{
+  height:100%; overflow:hidden;
+  -webkit-text-size-adjust:100%; text-size-adjust:100%;
+  overscroll-behavior:none;
+  background:var(--page);
+}
+/* Coque applicative : la page ne défile pas, seul le contenu défile.
+   Supprime le rebond, le tiré-pour-rafraîchir et le glissement latéral. */
 body{
+  position:fixed; inset:0;
+  display:flex; flex-direction:column;
+  overflow:hidden;
   font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
   background:var(--page); color:var(--ink);
   font-size:15px; line-height:1.45;
   -webkit-font-smoothing:antialiased;
-  overscroll-behavior-y:none;
+  overscroll-behavior:none;
+  touch-action:manipulation;                 /* pas de zoom par double tap */
+  -webkit-tap-highlight-color:transparent;
+  -webkit-touch-callout:none;                /* pas de menu au appui long */
+  -webkit-user-select:none; user-select:none;
 }
+/* la sélection reste possible là où elle sert */
+input,textarea,select,[contenteditable]{-webkit-user-select:text;user-select:text}
 button,input,select,textarea{font:inherit;color:inherit}
 button{cursor:pointer;background:none;border:none;padding:0}
 h1,h2,h3,h4{margin:0;font-weight:640;letter-spacing:-.01em}
@@ -100,14 +117,21 @@ a{color:var(--s1)}
 /* ============================================================
    LAYOUT
    ============================================================ */
-#app{max-width:760px;margin:0 auto;padding:0 14px calc(96px + var(--safe-b));}
+/* zone défilante unique */
+#app{
+  flex:1 1 auto; min-height:0; width:100%;
+  max-width:760px; margin:0 auto;
+  padding:12px 14px 24px;
+  overflow-y:auto; overflow-x:hidden;
+  overscroll-behavior:contain;
+  -webkit-overflow-scrolling:touch;
+}
 header.topbar{
-  position:sticky;top:0;z-index:40;
-  background:color-mix(in srgb, var(--page) 88%, transparent);
+  flex:none; z-index:40;
+  background:color-mix(in srgb, var(--page) 92%, transparent);
   backdrop-filter:saturate(180%) blur(14px);
   -webkit-backdrop-filter:saturate(180%) blur(14px);
   padding:calc(var(--safe-t) + 10px) 14px 10px;
-  margin:0 -14px 12px;
   border-bottom:1px solid var(--border);
 }
 .topbar-row{max-width:760px;margin:0 auto;display:flex;align-items:center;gap:10px}
@@ -125,8 +149,8 @@ header.topbar{
    TABBAR
    ============================================================ */
 nav.tabbar{
-  position:fixed;left:0;right:0;bottom:0;z-index:50;
-  background:color-mix(in srgb, var(--surface) 92%, transparent);
+  flex:none;position:relative;z-index:50;
+  background:color-mix(in srgb, var(--surface) 96%, transparent);
   backdrop-filter:saturate(180%) blur(16px);
   -webkit-backdrop-filter:saturate(180%) blur(16px);
   border-top:1px solid var(--border);
@@ -200,17 +224,21 @@ nav.tabbar{
 .meal{border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:9px;background:var(--surface);overflow:hidden}
 .meal-head{display:flex;align-items:center;gap:9px;padding:10px 12px;background:var(--surface-2)}
 .meal-head .emoji{font-size:15px;line-height:1}
-.meal-head .t{font-weight:620;font-size:13.5px;flex:1}
-.meal-head .kcal{font-size:13px;font-weight:640;color:var(--ink-2)}
+.meal-head .t{font-weight:620;font-size:13.5px;flex:1;min-width:0}
+.meal-head .tot{flex:0 0 auto;text-align:right;line-height:1.2}
+.meal-head .kcal{display:block;font-size:13px;font-weight:640;color:var(--ink-2)}
+.meal-head .mini{display:block;font-size:10.5px;font-weight:520;color:var(--muted);margin-top:1px;letter-spacing:-.005em}
 .meal-body{padding:2px 0}
 .item{display:flex;align-items:center;gap:10px;padding:9px 12px;border-top:1px solid var(--border)}
 .item:first-child{border-top:none}
-.item .nm{flex:1;min-width:0}
+.item .nm{flex:1 1 auto;min-width:0}
+.item .kc{flex:0 0 auto}
 .item .nm b{display:block;font-weight:540;font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .item .nm span{font-size:11.5px;color:var(--muted)}
 .item .kc{font-size:13px;font-weight:600;white-space:nowrap}
-.item .x{width:26px;height:26px;border-radius:8px;display:grid;place-items:center;color:var(--muted);flex:none}
-.item .x svg{width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round}
+.x{width:28px;height:28px;border-radius:8px;display:grid;place-items:center;color:var(--muted);flex:0 0 auto}
+.x svg{width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.x:active{background:var(--surface-3)}
 .meal-add{display:flex;align-items:center;justify-content:center;gap:6px;width:100%;padding:10px;font-size:12.5px;font-weight:580;color:var(--s1);border-top:1px solid var(--border)}
 .meal-add svg{width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:2.2;stroke-linecap:round}
 .empty{padding:14px 12px;font-size:12.5px;color:var(--muted);text-align:center}
@@ -220,11 +248,15 @@ nav.tabbar{
    ============================================================ */
 .field{margin-bottom:11px}
 .field > label{display:block;font-size:11.5px;font-weight:600;color:var(--ink-2);margin-bottom:5px;letter-spacing:.005em}
-.field .hint{font-size:11px;color:var(--muted);margin-top:4px;line-height:1.35}
+.hint{font-size:11.5px;color:var(--muted);margin-top:4px;line-height:1.4}
+input[type=checkbox]{
+  width:22px;height:22px;flex:0 0 auto;margin:0;
+  accent-color:var(--s1);appearance:auto;-webkit-appearance:checkbox;
+}
 input[type=text],input[type=number],input[type=date],input[type=search],select,textarea{
   width:100%;padding:10px 11px;border-radius:var(--radius-sm);
   border:1px solid var(--border-strong);background:var(--surface-2);
-  font-size:15px;appearance:none;-webkit-appearance:none;
+  font-size:16px;appearance:none;-webkit-appearance:none;   /* 16px : évite le zoom iOS au focus */
 }
 input:focus,select:focus,textarea:focus{outline:2px solid color-mix(in srgb,var(--s1) 60%,transparent);outline-offset:-1px;border-color:var(--s1)}
 input[type=number]{font-variant-numeric:tabular-nums}
@@ -284,9 +316,10 @@ textarea{resize:vertical;min-height:64px}
    LISTS / SEARCH RESULTS
    ============================================================ */
 .res{display:flex;align-items:center;gap:10px;padding:11px 12px;border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:7px;background:var(--surface);width:100%;text-align:left}
-.res .nm{flex:1;min-width:0}
+.res .nm{flex:1 1 auto;min-width:0}
 .res .nm b{display:block;font-size:13.5px;font-weight:580;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .res .nm span{font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block}
+.res .nm.wrap span{white-space:normal;overflow:visible;line-height:1.4;margin-top:2px}
 .res .tag{font-size:10px;font-weight:640;letter-spacing:.04em;text-transform:uppercase;padding:3px 6px;border-radius:6px;background:var(--surface-3);color:var(--ink-2);flex:none}
 .res .go{color:var(--muted);flex:none}
 .res .go svg{width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
@@ -371,7 +404,7 @@ table.data td.neg{color:var(--critical);font-weight:600}
 .view.active{display:block;animation:fade .18s ease}
 @keyframes fade{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:none}}
 .toast{
-  position:fixed;left:50%;bottom:calc(84px + var(--safe-b));transform:translateX(-50%) translateY(8px);
+  position:fixed;left:50%;bottom:calc(78px + var(--safe-b));transform:translateX(-50%) translateY(8px);
   background:var(--ink);color:var(--page);padding:10px 16px;border-radius:99px;
   font-size:13px;font-weight:560;z-index:200;opacity:0;pointer-events:none;transition:all .2s;
   box-shadow:0 8px 24px rgba(0,0,0,.3);max-width:88vw;text-align:center;
@@ -625,6 +658,8 @@ const fmt1 = n => r1(n).toLocaleString("fr-FR", { minimumFractionDigits: 1, maxi
 const sign = n => (n > 0 ? "+" : n < 0 ? "−" : "") + fmt(Math.abs(n));
 /* nombre décimal en écriture française, sans zéros inutiles */
 const dec = n => String(Math.round(n * 1e6) / 1e6).replace(".", ",");
+/* grammage lisible : une décimale au plus, sans zéro inutile (13 et non 13,0) */
+const fmtg = n => dec(r1(n));
 
 const isoDate = d => {
   const t = new Date(d);
@@ -963,8 +998,10 @@ function renderSheet() {
   const s = SheetStack[SheetStack.length - 1];
   const bd = $("#sheetBackdrop");
   if (!s) { bd.classList.remove("open"); $("#sheetBody").innerHTML = ""; $("#sheetFoot").innerHTML = ""; return; }
-  $("#sheetTitle").textContent = s.title;
-  $("#sheetBody").innerHTML = s.body || "";
+  $("#sheetTitle").textContent = typeof s.title === "function" ? s.title() : s.title;
+  /* `body` peut être une fonction : la feuille se réaffiche alors avec l'état courant
+     quand on revient d'une sous-feuille (saisie en cours conservée). */
+  $("#sheetBody").innerHTML = (typeof s.body === "function" ? s.body() : s.body) || "";
   const foot = $("#sheetFoot");
   foot.innerHTML = "";
   (s.footer || []).forEach((b, i) => {
@@ -989,7 +1026,7 @@ function setView(v) {
   UI.view = v;
   $$(".view").forEach(el => el.classList.toggle("active", el.id === "view-" + v));
   $$(".tab").forEach(b => b.setAttribute("aria-selected", String(b.dataset.v === v)));
-  window.scrollTo({ top: 0 });
+  const sc = $("#app"); if (sc) sc.scrollTop = 0;
   render();
 }
 
@@ -1119,8 +1156,8 @@ function renderJour() {
       const x = itemTotals(it);
       const g = itemGrams(it);
       const sub = it.kind === "dish"
-        ? `${(it.items || []).length} aliment${(it.items || []).length > 1 ? "s" : ""} · ${fmt(g)} g · P ${fmt(x.prot)} G ${fmt(x.gluc)} L ${fmt(x.lip)}`
-        : `${fmt(g)} g · P ${fmt(x.prot)} G ${fmt(x.gluc)} L ${fmt(x.lip)}`;
+        ? `${(it.items || []).length} aliment${(it.items || []).length > 1 ? "s" : ""} · ${fmt(g)} g · P ${fmt(x.prot)} · G ${fmt(x.gluc)} · L ${fmt(x.lip)}`
+        : `${fmt(g)} g · P ${fmt(x.prot)} · G ${fmt(x.gluc)} · L ${fmt(x.lip)}`;
       return `<div class="item" data-item="${it.id}" data-meal="${mt.id}">
         <div class="nm"><b>${it.kind === "dish" ? "🍲 " : ""}${esc(it.name)}</b><span>${sub}</span></div>
         <div class="kc tnum">${fmt(x.kcal)} kcal</div>
@@ -1129,7 +1166,10 @@ function renderJour() {
     }).join("");
     return `<div class="meal">
       <div class="meal-head"><span class="emoji">${mt.emoji}</span><span class="t">${mt.label}</span>
-        <span class="kcal tnum">${t.kcal > 0 ? fmt(t.kcal) + " kcal" : ""}</span></div>
+        ${t.kcal > 0 ? `<span class="tot">
+          <b class="kcal tnum">${fmt(t.kcal)} kcal</b>
+          <span class="mini tnum">P ${fmt(t.prot)} · G ${fmt(t.gluc)} · L ${fmt(t.lip)}</span>
+        </span>` : ""}</div>
       <div class="meal-body">${rows || `<div class="empty">Rien pour l'instant</div>`}</div>
       <button class="meal-add" data-add="${mt.id}">${ICON.plus} Ajouter</button>
     </div>`;
@@ -1188,7 +1228,7 @@ function openAddPicker(mealTypeId) {
       return arr.map(d => {
         const t = sumTotals(d.items);
         return `<button class="res" data-dish="${d.id}">
-          <div class="nm"><b>🍲 ${esc(d.name)}</b><span>${d.items.length} aliments · ${fmt(t.kcal)} kcal · P ${fmt(t.prot)} G ${fmt(t.gluc)} L ${fmt(t.lip)}</span></div>
+          <div class="nm"><b>🍲 ${esc(d.name)}</b><span>${d.items.length} aliments · ${fmt(t.kcal)} kcal · P ${fmt(t.prot)} · G ${fmt(t.gluc)} · L ${fmt(t.lip)}</span></div>
           <span class="go">${ICON.chev}</span></button>`;
       }).join("");
     }
@@ -1198,7 +1238,7 @@ function openAddPicker(mealTypeId) {
       .slice(0, 120);
     if (!arr.length) return `<div class="empty">Aucun aliment.<br>Crée-en un avec « Nouvel aliment » ou charge la base dans Profil.</div>`;
     return arr.map(f => `<button class="res" data-food="${f.id}">
-        <div class="nm"><b>${esc(f.name)}</b><span>${fmt(f.kcal100)} kcal · P ${fmt1(f.prot100)} G ${fmt1(f.gluc100)} L ${fmt1(f.lip100)} /100 g</span></div>
+        <div class="nm"><b>${esc(f.name)}</b><span>${fmt(f.kcal100)} kcal · P ${fmtg(f.prot100)} · G ${fmtg(f.gluc100)} · L ${fmtg(f.lip100)} /100 g</span></div>
         <span class="go">${ICON.chev}</span></button>`).join("");
   }
 
@@ -1243,20 +1283,24 @@ function addItemToMeal(mealTypeId, item) {
   toast("Ajouté au repas");
 }
 
-/* ---------- quantité d'un aliment ---------- */
+/* ---------- quantité d'un aliment (+ accès direct à ses macros) ---------- */
 function openQuantitySheet(food, existingItem, onConfirm) {
-  const g0 = existingItem ? num(existingItem.grams) : 100;
-  const base = existingItem || food;
-  const html = `
-    <div class="card tight" style="margin-bottom:12px">
-      <div style="font-weight:640;font-size:15px;margin-bottom:2px">${esc(base.name)}</div>
-      <div style="font-size:12px;color:var(--muted)">
-        ${fmt(base.kcal100)} kcal · P ${fmt1(base.prot100)} · G ${fmt1(base.gluc100)} · L ${fmt1(base.lip100)} · F ${fmt1(base.fib100 || 0)} — pour 100 g
-      </div>
+  /* `base` porte les valeurs pour 100 g affichées et modifiables ici */
+  const base = existingItem || {
+    name: food.name, foodId: food.id || null,
+    kcal100: num(food.kcal100), prot100: num(food.prot100), gluc100: num(food.gluc100),
+    lip100: num(food.lip100), fib100: num(food.fib100)
+  };
+  let grams = existingItem ? num(existingItem.grams) : 100;
+
+  const html = () => `
+    <div class="card tight" style="margin-bottom:10px">
+      <div id="qHead"></div>
+      <button class="btn block ghost" id="qEdit" style="margin-top:10px">${ICON.edit} Modifier les macros</button>
     </div>
     <div class="field">
       <label for="qG">Quantité consommée (g)</label>
-      <input type="number" id="qG" inputmode="decimal" step="1" min="0" value="${g0}">
+      <input type="number" id="qG" inputmode="decimal" step="1" min="0" value="${grams}">
     </div>
     <div class="chips" id="qChips">
       ${[30, 50, 80, 100, 125, 150, 200, 250, 300].map(v => `<button class="chip" data-g="${v}">${v} g</button>`).join("")}
@@ -1273,31 +1317,79 @@ function openQuantitySheet(food, existingItem, onConfirm) {
           if (g <= 0) return toast("Quantité invalide");
           const item = existingItem
             ? Object.assign(existingItem, { grams: g })
-            : { id: uid(), kind: "food", foodId: food.id || null, name: food.name, grams: g,
-                kcal100: num(food.kcal100), prot100: num(food.prot100), gluc100: num(food.gluc100),
-                lip100: num(food.lip100), fib100: num(food.fib100) };
-          if (food && food.id) { const f = DB.foods.find(x => x.id === food.id); if (f) f.uses = (f.uses || 0) + 1; }
+            : { id: uid(), kind: "food", foodId: base.foodId, name: base.name, grams: g,
+                kcal100: base.kcal100, prot100: base.prot100, gluc100: base.gluc100,
+                lip100: base.lip100, fib100: base.fib100 };
+          if (base.foodId) { const f = DB.foods.find(x => x.id === base.foodId); if (f) f.uses = (f.uses || 0) + 1; }
           onConfirm(item);
         } }
     ],
     onMount(root) {
       const inp = $("#qG", root);
+      const head = () => {
+        $("#qHead", root).innerHTML = `
+          <div style="font-weight:640;font-size:15px;margin-bottom:2px">${esc(base.name)}</div>
+          <div style="font-size:12px;color:var(--muted)">
+            ${fmt(base.kcal100)} kcal · P ${fmtg(base.prot100)} · G ${fmtg(base.gluc100)} · L ${fmtg(base.lip100)} · F ${fmtg(base.fib100 || 0)} — pour 100 g
+          </div>`;
+      };
       const upd = () => {
-        const t = itemTotals({ ...base, grams: num(inp.value) });
+        head();
+        grams = num(inp.value);
+        const t = itemTotals({ ...base, grams });
         $("#qPreview", root).innerHTML =
           kv("Calories", `<b>${fmt(t.kcal)} kcal</b>`) + kv("Protéines", fmt1(t.prot) + " g") +
           kv("Glucides", fmt1(t.gluc) + " g") + kv("Lipides", fmt1(t.lip) + " g") + kv("Fibres", fmt1(t.fib) + " g");
       };
       inp.oninput = upd;
       $("#qChips", root).onclick = e => { const b = e.target.closest("[data-g]"); if (!b) return; inp.value = b.dataset.g; upd(); };
+
+      /* modification des macros, depuis n'importe quel point de l'app */
+      $("#qEdit", root).onclick = () => {
+        const linked = base.foodId ? DB.foods.find(f => f.id === base.foodId) : null;
+        openFoodForm(linked || base, data => {
+          base.name = data.name; base.kcal100 = data.kcal100; base.prot100 = data.prot100;
+          base.gluc100 = data.gluc100; base.lip100 = data.lip100; base.fib100 = data.fib100;
+          closeSheet();   /* la feuille quantité se réaffiche avec les nouvelles valeurs */
+          toast("Macros mises à jour");
+        }, { standalone: !linked });
+      };
       upd();
       setTimeout(() => { inp.focus(); inp.select(); }, 120);
     }
   });
 }
 
-/* ---------- formulaire aliment ---------- */
-function openFoodForm(existing, onSaved) {
+/* ---------- répercussion d'une correction de macros ---------- */
+function eachStoredItem(fn) {
+  DB.dishes.forEach(d => (d.items || []).forEach(it => fn(it, "dish")));
+  Object.values(DB.days).forEach(day => (day.meals || []).forEach(m => (m.items || []).forEach(it => {
+    if (it.kind === "dish") (it.items || []).forEach(sub => fn(sub, "day"));
+    else fn(it, "day");
+  })));
+}
+function countFoodRefs(foodId) {
+  const c = { dish: 0, day: 0 };
+  eachStoredItem((it, where) => { if (it.foodId === foodId) c[where]++; });
+  return c;
+}
+function propagateFood(foodId, data, toDishes, toDays) {
+  eachStoredItem((it, where) => {
+    if (it.foodId !== foodId) return;
+    if (where === "dish" && !toDishes) return;
+    if (where === "day" && !toDays) return;
+    it.name = data.name; it.kcal100 = data.kcal100; it.prot100 = data.prot100;
+    it.gluc100 = data.gluc100; it.lip100 = data.lip100; it.fib100 = data.fib100;
+  });
+}
+
+/* ---------- formulaire aliment ----------
+   opts.standalone : ne touche pas à la bibliothèque, renvoie seulement les valeurs
+   (cas d'un aliment saisi à la volée, sans fiche enregistrée)                        */
+function openFoodForm(existing, onSaved, opts) {
+  opts = opts || {};
+  const inLibrary = !opts.standalone && !!(existing && existing.id && DB.foods.some(x => x.id === existing.id));
+  const refs = inLibrary ? countFoodRefs(existing.id) : { dish: 0, day: 0 };
   const f = existing || { name: "", kcal100: "", prot100: "", gluc100: "", lip100: "", fib100: "" };
   const html = `
     <div class="field"><label for="fName">Nom de l'aliment</label>
@@ -1317,10 +1409,19 @@ function openFoodForm(existing, onSaved) {
       <div class="field"><label for="fL">Lipides / 100 g</label><input type="number" id="fL" inputmode="decimal" step="0.1" min="0" value="${f.lip100}"></div>
       <div class="field"><label for="fF">Fibres / 100 g</label><input type="number" id="fF" inputmode="decimal" step="0.1" min="0" value="${f.fib100}"></div>
     </div>
-    <div class="banner info" id="fCheck" style="display:none"></div>`;
+    <div class="banner info" id="fCheck" style="display:none"></div>
+    ${refs.dish + refs.day > 0 ? `
+      <div class="section-title" style="margin-top:16px">Répercuter la correction</div>
+      <div class="card tight" style="margin-bottom:0">
+        ${refs.dish ? `<label class="kv" style="cursor:pointer"><span class="k">Mes plats enregistrés<br><small style="color:var(--muted)">${refs.dish} ingrédient${refs.dish > 1 ? "s" : ""} concerné${refs.dish > 1 ? "s" : ""}</small></span>
+          <input type="checkbox" id="fPropDish" checked></label>` : ""}
+        ${refs.day ? `<label class="kv" style="cursor:pointer"><span class="k">Journées déjà enregistrées<br><small style="color:var(--muted)">${refs.day} entrée${refs.day > 1 ? "s" : ""} — recalcule l'historique</small></span>
+          <input type="checkbox" id="fPropDay"></label>` : ""}
+      </div>
+      <div class="hint" style="padding:6px 2px 0">Les journées passées restent inchangées par défaut, pour ne pas réécrire un bilan déjà validé.</div>` : ""}`;
 
   openSheet({
-    title: existing ? "Modifier l'aliment" : "Nouvel aliment",
+    title: existing && (existing.id || opts.standalone) ? "Modifier l'aliment" : "Nouvel aliment",
     body: html,
     footer: [
       { label: "Annuler", cls: "ghost", onClick: closeSheet },
@@ -1333,9 +1434,20 @@ function openFoodForm(existing, onSaved) {
           const data = { name, kcal100: r1(kcal), prot100: num($("#fP").value), gluc100: num($("#fG").value),
                          lip100: num($("#fL").value), fib100: num($("#fF").value) };
           if (data.kcal100 <= 0) return toast("Indique l'énergie pour 100 g");
+
+          /* aliment saisi à la volée : on renvoie les valeurs sans toucher à la bibliothèque */
+          if (opts.standalone) { if (onSaved) onSaved(data); else closeSheet(); return; }
+
           let saved;
-          if (existing && existing.id) { Object.assign(existing, data); saved = existing; }
-          else { saved = { id: uid(), uses: 0, createdAt: Date.now(), ...data }; DB.foods.push(saved); }
+          if (inLibrary) {
+            Object.assign(existing, data); saved = existing;
+            const toDish = !!($("#fPropDish") && $("#fPropDish").checked);
+            const toDay = !!($("#fPropDay") && $("#fPropDay").checked);
+            if (toDish || toDay) propagateFood(existing.id, data, toDish, toDay);
+          } else {
+            saved = { id: uid(), uses: 0, createdAt: Date.now(), ...data };
+            DB.foods.push(saved);
+          }
           DB.foods.sort((a, b) => a.name.localeCompare(b.name, "fr"));
           persist();
           if (onSaved) onSaved(saved); else { closeSheet(); render(); toast("Aliment enregistré"); }
@@ -1394,7 +1506,7 @@ function openFoodPicker(onPick) {
       .sort((a, b) => (b.uses || 0) - (a.uses || 0) || a.name.localeCompare(b.name, "fr")).slice(0, 120);
     if (!arr.length) return `<div class="empty">Aucun aliment trouvé.</div>`;
     return arr.map(f => `<button class="res" data-food="${f.id}">
-      <div class="nm"><b>${esc(f.name)}</b><span>${fmt(f.kcal100)} kcal · P ${fmt1(f.prot100)} G ${fmt1(f.gluc100)} L ${fmt1(f.lip100)} /100 g</span></div>
+      <div class="nm"><b>${esc(f.name)}</b><span>${fmt(f.kcal100)} kcal · P ${fmtg(f.prot100)} · G ${fmtg(f.gluc100)} · L ${fmtg(f.lip100)} /100 g</span></div>
       <span class="go">${ICON.chev}</span></button>`).join("");
   };
   openSheet({
@@ -1441,7 +1553,7 @@ function openDishBuilder(source, opts) {
   const rows = () => items.length ? items.map(it => {
     const x = itemTotals(it);
     return `<div class="item" style="border:1px solid var(--border);border-radius:10px;margin-bottom:6px" data-ing="${it.id}">
-      <div class="nm"><b>${esc(it.name)}</b><span>${fmt(it.grams)} g · P ${fmt1(x.prot)} G ${fmt1(x.gluc)} L ${fmt1(x.lip)}</span></div>
+      <div class="nm"><b>${esc(it.name)}</b><span>${fmt(it.grams)} g · P ${fmtg(x.prot)} · G ${fmtg(x.gluc)} · L ${fmtg(x.lip)}</span></div>
       <div class="kc tnum">${fmt(x.kcal)} kcal</div>
       <button class="x" data-delIng="${it.id}" aria-label="Retirer">${ICON.x}</button>
     </div>`;
@@ -1464,10 +1576,10 @@ function openDishBuilder(source, opts) {
     if (opts.library) return "";
     if (!source) {
       return `<label class="kv" style="cursor:pointer"><span class="k">Enregistrer ce plat pour le réutiliser</span>
-        <input type="checkbox" id="dSave" ${saveToLibrary ? "checked" : ""} style="width:auto"></label>`;
+        <input type="checkbox" id="dSave" ${saveToLibrary ? "checked" : ""}></label>`;
     }
     return `<label class="kv" style="cursor:pointer"><span class="k">Mettre à jour le plat enregistré « ${esc(source.name)} »</span>
-      <input type="checkbox" id="dUpd" ${updateLibrary ? "checked" : ""} style="width:auto"></label>`;
+      <input type="checkbox" id="dUpd" ${updateLibrary ? "checked" : ""}></label>`;
   }
 
   function commit() {
@@ -1506,13 +1618,17 @@ function openDishBuilder(source, opts) {
   openSheet({
     title: opts.library ? (editingLibraryDish ? "Modifier le plat" : "Nouveau plat")
          : (source ? "Réutiliser — " + source.name : "Nouveau plat"),
-    body: body(),
+    body: body,
     footer: [
       { label: "Annuler", cls: "ghost", onClick: closeSheet },
       { label: opts.library ? "Enregistrer" : (opts.dayItem ? "Enregistrer" : "Ajouter au repas"), cls: "primary", onClick: commit }
     ],
     onMount(root) {
       $("#dOpts", root).innerHTML = optsHTML();
+      $("#dName", root).oninput = e => { name = e.target.value; };
+      const cbS = $("#dSave", root), cbU = $("#dUpd", root);
+      if (cbS) cbS.onchange = e => { saveToLibrary = e.target.checked; };
+      if (cbU) cbU.onchange = e => { updateLibrary = e.target.checked; };
       $("#dAdd", root).onclick = () => openFoodPicker(f => {
         openQuantitySheet(f, null, item => { items.push(item); closeSheet(); refresh(); });
       });
@@ -1566,9 +1682,10 @@ function renderBiblio() {
     const arr = DB.foods.filter(f => !q || f.name.toLowerCase().includes(q))
       .sort((a, b) => a.name.localeCompare(b.name, "fr"));
     list.innerHTML = arr.length ? arr.map(f => `
-      <div class="res" style="cursor:default">
-        <div class="nm"><b>${esc(f.name)}</b>
-          <span>${fmt(f.kcal100)} kcal · ${fmt(f.kcal100 * KJ_PER_KCAL)} kJ · P ${fmt1(f.prot100)} · G ${fmt1(f.gluc100)} · L ${fmt1(f.lip100)} · F ${fmt1(f.fib100)} /100 g</span></div>
+      <div class="res" data-editfood="${f.id}">
+        <div class="nm wrap"><b>${esc(f.name)}</b>
+          <span>${fmt(f.kcal100)} kcal · ${fmt(f.kcal100 * KJ_PER_KCAL)} kJ pour 100 g<br>
+          P ${fmtg(f.prot100)} · G ${fmtg(f.gluc100)} · L ${fmtg(f.lip100)} · F ${fmtg(f.fib100)}</span></div>
         <button class="x" data-editfood="${f.id}" aria-label="Modifier">${ICON.edit}</button>
         <button class="x" data-delfood="${f.id}" aria-label="Supprimer">${ICON.trash}</button>
       </div>`).join("")
@@ -2300,6 +2417,49 @@ function setWeight(v) {
   persist(); renderJour();
 }
 
+/* ----------------------------------------------------------------------------
+   Comportement applicatif : ni pincement, ni double tap, ni rebond de page.
+   iOS Safari ignore user-scalable=no, ces gardes sont donc nécessaires.
+   -------------------------------------------------------------------------- */
+function lockViewport() {
+  ["gesturestart", "gesturechange", "gestureend"].forEach(ev =>
+    document.addEventListener(ev, e => e.preventDefault(), { passive: false }));
+
+  /* pincement à deux doigts */
+  document.addEventListener("touchmove", e => {
+    if (e.touches.length > 1) e.preventDefault();
+  }, { passive: false });
+
+  /* double tap rapproché — sauf sur les commandes, où deux appuis rapides sont légitimes */
+  let lastTap = 0, lastX = 0, lastY = 0;
+  document.addEventListener("touchend", e => {
+    const t = e.changedTouches[0];
+    if (!t) return;
+    const interactive = e.target.closest && e.target.closest("button,input,select,textarea,label,a,[data-add],[data-item],[data-food],[data-dish]");
+    const near = Math.abs(t.clientX - lastX) < 32 && Math.abs(t.clientY - lastY) < 32;
+    if (!interactive && near && e.timeStamp - lastTap < 300) e.preventDefault();
+    lastTap = e.timeStamp; lastX = t.clientX; lastY = t.clientY;
+  }, { passive: false });
+
+  /* zoom au trackpad / Ctrl+molette sur ordinateur */
+  document.addEventListener("wheel", e => { if (e.ctrlKey) e.preventDefault(); }, { passive: false });
+  document.addEventListener("keydown", e => {
+    if ((e.ctrlKey || e.metaKey) && ["+", "-", "=", "0"].includes(e.key)) e.preventDefault();
+  });
+
+  /* si le clavier virtuel a décalé la vue, on la remet en place */
+  const reset = () => { window.scrollTo(0, 0); document.body.scrollTop = 0; };
+  window.addEventListener("orientationchange", () => setTimeout(reset, 120));
+  if (window.visualViewport) window.visualViewport.addEventListener("resize", reset);
+
+  /* champ focalisé toujours visible au-dessus du clavier */
+  document.addEventListener("focusin", e => {
+    const t = e.target;
+    if (!t.matches || !t.matches("input,textarea,select")) return;
+    setTimeout(() => { try { t.scrollIntoView({ block: "center", behavior: "smooth" }); } catch (err) {} }, 260);
+  });
+}
+
 function wire() {
   /* — onglets — */
   $(".tabbar-inner").addEventListener("click", e => {
@@ -2408,14 +2568,17 @@ function wire() {
         () => { DB.dishes = DB.dishes.filter(x => x.id !== d.id); persist(); renderBiblio(); toast("Plat supprimé"); }, "Supprimer");
       return;
     }
-    const ef = e.target.closest("[data-editfood]");
-    if (ef) { const f = DB.foods.find(x => x.id === ef.dataset.editfood); if (f) openFoodForm(f, null); return; }
+    /* la suppression est testée avant la modification : le bouton corbeille est
+       imbriqué dans la ligne, elle-même porteuse de data-editfood */
     const df = e.target.closest("[data-delfood]");
     if (df) {
       const f = DB.foods.find(x => x.id === df.dataset.delfood);
       if (f) confirmSheet("Supprimer l'aliment", `« ${esc(f.name)} » sera retiré de ta bibliothèque. Les repas déjà enregistrés ne changent pas.`,
         () => { DB.foods = DB.foods.filter(x => x.id !== f.id); persist(); renderBiblio(); toast("Aliment supprimé"); }, "Supprimer");
+      return;
     }
+    const ef = e.target.closest("[data-editfood]");
+    if (ef) { const f = DB.foods.find(x => x.id === ef.dataset.editfood); if (f) openFoodForm(f, null); }
   });
 
   /* — analyse — */
@@ -2521,6 +2684,7 @@ function wire() {
     persist(true);
   }
   applyTheme();
+  lockViewport();
   wire();
   render();
 
