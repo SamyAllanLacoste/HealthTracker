@@ -154,15 +154,17 @@ nav.tabbar{
   backdrop-filter:saturate(180%) blur(16px);
   -webkit-backdrop-filter:saturate(180%) blur(16px);
   border-top:1px solid var(--border);
-  padding:6px 8px calc(6px + var(--safe-b));
+  /* hauteur alignée sur une barre d'onglets iOS : 49 pt de contenu + zone sûre.
+     max() garde une marge basse minimale sur les appareils sans zone sûre. */
+  padding:2px 8px max(4px, var(--safe-b));
 }
 .tabbar-inner{max-width:760px;margin:0 auto;display:grid;grid-template-columns:repeat(4,1fr);gap:4px}
 .tab{
-  display:flex;flex-direction:column;align-items:center;gap:3px;
-  padding:7px 4px 5px;border-radius:12px;color:var(--muted);
-  font-size:10.5px;font-weight:560;letter-spacing:.01em;
+  display:flex;flex-direction:column;align-items:center;gap:2px;
+  padding:4px 4px 3px;border-radius:11px;color:var(--muted);
+  font-size:10px;font-weight:560;letter-spacing:.01em;
 }
-.tab svg{width:21px;height:21px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.tab svg{width:22px;height:22px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
 .tab[aria-selected="true"]{color:var(--s1);background:color-mix(in srgb,var(--s1) 10%,transparent)}
 
 /* ============================================================
@@ -293,18 +295,36 @@ textarea{resize:vertical;min-height:64px}
 }
 .sheet-backdrop.open{opacity:1;pointer-events:auto}
 .sheet{
-  width:100%;max-width:760px;max-height:92vh;background:var(--page);
+  width:100%;max-width:760px;background:var(--page);
+  max-height:92vh; max-height:92dvh;
   border-radius:20px 20px 0 0;display:flex;flex-direction:column;
   transform:translateY(14px);transition:transform .2s cubic-bezier(.2,.8,.3,1);
   box-shadow:0 -8px 40px rgba(0,0,0,.28);
 }
+/* feuille à hauteur figée : la liste change sans que le panneau bouge */
+.sheet.tall{height:88vh;height:88dvh}
+/* base 0 : la hauteur du corps ne dépend plus du tout de son contenu */
+.sheet.tall .sheet-body{flex:1 1 0}
 .sheet-backdrop.open .sheet{transform:translateY(0)}
 .sheet-head{
   display:flex;align-items:center;gap:10px;padding:14px 16px 12px;
   border-bottom:1px solid var(--border);flex:none;
 }
 .sheet-head h3{font-size:15.5px;flex:1;letter-spacing:-.015em}
-.sheet-body{padding:14px 16px calc(18px + var(--safe-b));overflow-y:auto;-webkit-overflow-scrolling:touch}
+.sheet-body{
+  flex:1 1 auto;min-height:0;   /* remplit la feuille : sa hauteur ne suit pas le contenu */
+  padding:14px 16px calc(18px + var(--safe-b));
+  overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;
+}
+/* sous-en-tête fixe d'une feuille : filtres et recherche, hors zone défilante,
+   donc strictement immobiles quand la liste change */
+.sheet-sub{
+  flex:0 0 auto;padding:12px 16px 12px;
+  background:var(--page);border-bottom:1px solid var(--border);
+}
+.sheet-sub:empty{display:none}
+.sheet-sub .field:last-child{margin-bottom:0}
+.res-count{font-size:11px;color:var(--muted);margin:8px 2px 6px;font-weight:520}
 .sheet-foot{
   padding:12px 16px calc(12px + var(--safe-b));border-top:1px solid var(--border);
   flex:none;background:var(--surface);display:flex;gap:8px;
@@ -404,7 +424,7 @@ table.data td.neg{color:var(--critical);font-weight:600}
 .view.active{display:block;animation:fade .18s ease}
 @keyframes fade{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:none}}
 .toast{
-  position:fixed;left:50%;bottom:calc(78px + var(--safe-b));transform:translateX(-50%) translateY(8px);
+  position:fixed;left:50%;bottom:calc(62px + var(--safe-b));transform:translateX(-50%) translateY(8px);
   background:var(--ink);color:var(--page);padding:10px 16px;border-radius:99px;
   font-size:13px;font-weight:560;z-index:200;opacity:0;pointer-events:none;transition:all .2s;
   box-shadow:0 8px 24px rgba(0,0,0,.3);max-width:88vw;text-align:center;
@@ -630,6 +650,7 @@ table.data td.neg{color:var(--critical);font-weight:600}
         <svg viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg>
       </button>
     </div>
+    <div class="sheet-sub" id="sheetSub"></div>
     <div class="sheet-body" id="sheetBody"></div>
     <div class="sheet-foot" id="sheetFoot"></div>
   </div>
@@ -997,10 +1018,11 @@ const SheetStack = [];
 function renderSheet() {
   const s = SheetStack[SheetStack.length - 1];
   const bd = $("#sheetBackdrop");
-  if (!s) { bd.classList.remove("open"); $("#sheetBody").innerHTML = ""; $("#sheetFoot").innerHTML = ""; return; }
+  if (!s) { bd.classList.remove("open"); $("#sheetSub").innerHTML = ""; $("#sheetBody").innerHTML = ""; $("#sheetFoot").innerHTML = ""; return; }
   $("#sheetTitle").textContent = typeof s.title === "function" ? s.title() : s.title;
   /* `body` peut être une fonction : la feuille se réaffiche alors avec l'état courant
      quand on revient d'une sous-feuille (saisie en cours conservée). */
+  $("#sheetSub").innerHTML = (typeof s.sub === "function" ? s.sub() : s.sub) || "";
   $("#sheetBody").innerHTML = (typeof s.body === "function" ? s.body() : s.body) || "";
   const foot = $("#sheetFoot");
   foot.innerHTML = "";
@@ -1012,6 +1034,7 @@ function renderSheet() {
     foot.appendChild(btn);
   });
   foot.style.display = (s.footer && s.footer.length) ? "flex" : "none";
+  $(".sheet", bd).classList.toggle("tall", !!s.tall);
   bd.classList.add("open");
   $("#sheetBody").scrollTop = 0;
   if (s.onMount) s.onMount($("#sheetBody"));
@@ -1219,12 +1242,21 @@ function openAddPicker(mealTypeId) {
   const mt = MEAL_TYPES.find(m => m.id === mealTypeId);
   let tab = "plats", q = "";
 
-  function listHTML() {
+  function matches() {
     if (tab === "plats") {
-      const arr = DB.dishes
+      return DB.dishes
         .filter(d => !q || d.name.toLowerCase().includes(q))
         .sort((a, b) => (b.lastUsed || 0) - (a.lastUsed || 0));
-      if (!arr.length) return `<div class="empty">Aucun plat enregistré.<br>Crée-en un avec « Nouveau plat ».</div>`;
+    }
+    return DB.foods
+      .filter(f => !q || f.name.toLowerCase().includes(q))
+      .sort((a, b) => (b.uses || 0) - (a.uses || 0) || a.name.localeCompare(b.name, "fr"))
+      .slice(0, 200);
+  }
+  function listHTML() {
+    const arr = matches();
+    if (tab === "plats") {
+      if (!arr.length) return `<div class="empty">${q ? "Aucun plat ne correspond." : "Aucun plat enregistré.<br>Crée-en un avec « Nouveau plat »."}</div>`;
       return arr.map(d => {
         const t = sumTotals(d.items);
         return `<button class="res" data-dish="${d.id}">
@@ -1232,39 +1264,48 @@ function openAddPicker(mealTypeId) {
           <span class="go">${ICON.chev}</span></button>`;
       }).join("");
     }
-    const arr = DB.foods
-      .filter(f => !q || f.name.toLowerCase().includes(q))
-      .sort((a, b) => (b.uses || 0) - (a.uses || 0) || a.name.localeCompare(b.name, "fr"))
-      .slice(0, 120);
-    if (!arr.length) return `<div class="empty">Aucun aliment.<br>Crée-en un avec « Nouvel aliment » ou charge la base dans Profil.</div>`;
+    if (!arr.length) return `<div class="empty">${q ? "Aucun aliment ne correspond.<br>Crée-le avec « Aliment » en bas." : "Aucun aliment.<br>Charge la base depuis l'onglet Profil."}</div>`;
     return arr.map(f => `<button class="res" data-food="${f.id}">
         <div class="nm"><b>${esc(f.name)}</b><span>${fmt(f.kcal100)} kcal · P ${fmtg(f.prot100)} · G ${fmtg(f.gluc100)} · L ${fmtg(f.lip100)} /100 g</span></div>
         <span class="go">${ICON.chev}</span></button>`).join("");
   }
-
-  function body() {
-    return `<div class="seg" id="pkSeg" style="margin-bottom:10px">
-        <button data-t="plats" aria-pressed="${tab === "plats"}">Mes plats</button>
-        <button data-t="aliments" aria-pressed="${tab === "aliments"}">Mes aliments</button>
-      </div>
-      <div class="field"><input type="search" id="pkQ" placeholder="Rechercher…" value="${esc(q)}" autocomplete="off"></div>
-      <div id="pkList">${listHTML()}</div>`;
+  function countLabel() {
+    const n = matches().length;
+    const mot = tab === "plats" ? "plat" : "aliment";
+    return `${n} ${mot}${n > 1 ? "s" : ""}${q ? " trouvé" + (n > 1 ? "s" : "") : ""}`;
   }
+
+  /* filtres et recherche vivent dans le sous-en-tête fixe : ils ne bougent jamais */
+  const sub = () => `
+    <div class="seg" id="pkSeg" style="margin-bottom:10px">
+      <button data-t="plats" aria-pressed="${tab === "plats"}">Mes plats</button>
+      <button data-t="aliments" aria-pressed="${tab === "aliments"}">Mes aliments</button>
+    </div>
+    <div class="field"><input type="search" id="pkQ" placeholder="Rechercher…" value="${esc(q)}" autocomplete="off" enterkeyhint="search"></div>`;
+  const body = () => `
+    <div class="res-count" id="pkCount">${countLabel()}</div>
+    <div id="pkList">${listHTML()}</div>`;
+
   function refresh() {
     $("#pkList").innerHTML = listHTML();
+    $("#pkCount").textContent = countLabel();
     $$("#pkSeg button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.t === tab)));
+    $("#sheetBody").scrollTop = 0;
   }
 
   openSheet({
     title: "Ajouter — " + mt.label,
-    body: body(),
+    sub: sub,
+    body: body,
+    tall: true,
     footer: [
       { label: ICON.plus + " Aliment", cls: "", onClick: () => openFoodForm(null, food => { closeSheet(); openQuantitySheet(food, null, item => addItemToMeal(mealTypeId, item)); }) },
       { label: ICON.plus + " Plat", cls: "primary", onClick: () => openDishBuilder(null, { mealTypeId }) }
     ],
     onMount(root) {
-      $("#pkSeg", root).onclick = e => { const b = e.target.closest("button[data-t]"); if (!b) return; tab = b.dataset.t; refresh(); };
-      $("#pkQ", root).oninput = e => { q = e.target.value.trim().toLowerCase(); $("#pkList").innerHTML = listHTML(); };
+      /* le sous-en-tête est hors de `root` : on le cible globalement */
+      $("#pkSeg").onclick = e => { const b = e.target.closest("button[data-t]"); if (!b) return; tab = b.dataset.t; refresh(); };
+      $("#pkQ").oninput = e => { q = e.target.value.trim().toLowerCase(); refresh(); };
       root.addEventListener("click", e => {
         const fb = e.target.closest("[data-food]");
         if (fb) { const f = DB.foods.find(x => x.id === fb.dataset.food); if (f) openQuantitySheet(f, null, item => addItemToMeal(mealTypeId, item)); return; }
@@ -1501,29 +1542,39 @@ function cloneItems(items) {
 /* Sélecteur d'aliment seul (pour ajouter un ingrédient) */
 function openFoodPicker(onPick) {
   let q = "";
+  const matches = () => DB.foods.filter(f => !q || f.name.toLowerCase().includes(q))
+    .sort((a, b) => (b.uses || 0) - (a.uses || 0) || a.name.localeCompare(b.name, "fr")).slice(0, 200);
   const list = () => {
-    const arr = DB.foods.filter(f => !q || f.name.toLowerCase().includes(q))
-      .sort((a, b) => (b.uses || 0) - (a.uses || 0) || a.name.localeCompare(b.name, "fr")).slice(0, 120);
-    if (!arr.length) return `<div class="empty">Aucun aliment trouvé.</div>`;
+    const arr = matches();
+    if (!arr.length) return `<div class="empty">Aucun aliment ne correspond.<br>Crée-le avec « Nouvel aliment ».</div>`;
     return arr.map(f => `<button class="res" data-food="${f.id}">
       <div class="nm"><b>${esc(f.name)}</b><span>${fmt(f.kcal100)} kcal · P ${fmtg(f.prot100)} · G ${fmtg(f.gluc100)} · L ${fmtg(f.lip100)} /100 g</span></div>
       <span class="go">${ICON.chev}</span></button>`).join("");
   };
+  const count = () => { const n = matches().length; return `${n} aliment${n > 1 ? "s" : ""}${q ? " trouvé" + (n > 1 ? "s" : "") : ""}`; };
   openSheet({
     title: "Choisir un aliment",
-    body: `<div class="field"><input type="search" id="fpQ" placeholder="Rechercher…" autocomplete="off"></div><div id="fpL">${list()}</div>`,
+    tall: true,
+    sub: () => `<div class="field"><input type="search" id="fpQ" placeholder="Rechercher…" value="${esc(q)}" autocomplete="off" enterkeyhint="search"></div>`,
+    body: () => `<div class="res-count" id="fpC">${count()}</div>
+      <div id="fpL">${list()}</div>`,
     footer: [
       { label: "Annuler", cls: "ghost", onClick: closeSheet },
       { label: ICON.plus + " Nouvel aliment", cls: "primary", onClick: () => openFoodForm(null, f => { closeSheet(); onPick(f); }) }
     ],
     onMount(root) {
-      $("#fpQ", root).oninput = e => { q = e.target.value.trim().toLowerCase(); $("#fpL", root).innerHTML = list(); };
+      $("#fpQ").oninput = e => {
+        q = e.target.value.trim().toLowerCase();
+        $("#fpL", root).innerHTML = list();
+        $("#fpC", root).textContent = count();
+        $("#sheetBody").scrollTop = 0;
+      };
       $("#fpL", root).onclick = e => {
         const b = e.target.closest("[data-food]"); if (!b) return;
         const f = DB.foods.find(x => x.id === b.dataset.food);
         if (f) { closeSheet(); onPick(f); }
       };
-      setTimeout(() => $("#fpQ", root).focus(), 120);
+      setTimeout(() => { const el = $("#fpQ"); if (el) el.focus(); }, 120);
     }
   });
 }
@@ -2452,11 +2503,19 @@ function lockViewport() {
   window.addEventListener("orientationchange", () => setTimeout(reset, 120));
   if (window.visualViewport) window.visualViewport.addEventListener("resize", reset);
 
-  /* champ focalisé toujours visible au-dessus du clavier */
+  /* champ focalisé remonté au-dessus du clavier — uniquement s'il est masqué,
+     et jamais pour un champ déjà épinglé en haut d'une feuille (sinon la liste saute) */
   document.addEventListener("focusin", e => {
     const t = e.target;
     if (!t.matches || !t.matches("input,textarea,select")) return;
-    setTimeout(() => { try { t.scrollIntoView({ block: "center", behavior: "smooth" }); } catch (err) {} }, 260);
+    if (t.closest(".sheet-sub")) return;
+    setTimeout(() => {
+      try {
+        const vh = (window.visualViewport && window.visualViewport.height) || window.innerHeight;
+        const r = t.getBoundingClientRect();
+        if (r.bottom > vh - 12 || r.top < 56) t.scrollIntoView({ block: "center", behavior: "smooth" });
+      } catch (err) {}
+    }, 260);
   });
 }
 
