@@ -682,7 +682,7 @@ table.data td.neg{color:var(--critical);font-weight:600}
 /* ============================================================================
    HEALTH TRACKER — noyau : stockage, modèle, moteur de calcul
    ========================================================================== */
-const APP_VERSION = "1.0.0";
+const APP_VERSION = "1.1.0";
 const KJ_PER_KCAL = 4.184;
 
 /* ---------- utilitaires ---------- */
@@ -694,13 +694,16 @@ const num = (v, d) => { const n = parseFloat(String(v).replace(",", ".")); retur
 const r0 = n => Math.round(n);
 const r1 = n => Math.round(n * 10) / 10;
 const r2 = n => Math.round(n * 100) / 100;
-const fmt = n => r0(n).toLocaleString("fr-FR");
-const fmt1 = n => r1(n).toLocaleString("fr-FR", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
-const sign = n => (n > 0 ? "+" : n < 0 ? "−" : "") + fmt(Math.abs(n));
+/* Toute valeur non finie (NaN, ±∞, undefined) s'affiche « — » plutôt que de
+   propager « NaN » ou « ∞ » dans l'interface. */
+const ok = n => Number.isFinite(+n);
+const fmt = n => ok(n) ? r0(+n).toLocaleString("fr-FR") : "—";
+const fmt1 = n => ok(n) ? (r1(+n) + 0).toLocaleString("fr-FR", { minimumFractionDigits: 1, maximumFractionDigits: 1 }) : "—";
+const sign = n => ok(n) ? ((+n > 0 ? "+" : +n < 0 ? "−" : "") + fmt(Math.abs(+n))) : "—";
 /* nombre décimal en écriture française, sans zéros inutiles */
-const dec = n => String(Math.round(n * 1e6) / 1e6).replace(".", ",");
+const dec = n => ok(n) ? String(Math.round(+n * 1e6) / 1e6 + 0).replace(".", ",") : "—";
 /* grammage lisible : une décimale au plus, sans zéro inutile (13 et non 13,0) */
-const fmtg = n => dec(r1(n));
+const fmtg = n => dec(r1(num(n)));
 
 const isoDate = d => {
   const t = new Date(d);
@@ -737,6 +740,29 @@ const DEFAULT_SETTINGS = {
   theme: "auto",
   tabSafe: 0.35        /* fraction de la zone sûre basse réservée sous les onglets */
 };
+
+/* bornes de validité appliquées aux réglages, à la validation d'un champ
+   comme à l'import d'un fichier : rien ne peut rendre le moteur incohérent */
+const SETTINGS_RANGE = {
+  age: [10, 100], taille: [100, 230], poids: [20, 300],
+  stepCoef: [0, 0.01], tefPct: [0, 30], tefProt: [0, 40], tefGluc: [0, 40], tefLip: [0, 40],
+  protMin: [0.3, 5], protMax: [0.3, 5], targetDeficit: [0, 1500],
+  kcalPerKgFat: [1000, 20000], stepsGoal: [0, 60000], trainGoal: [0, 21], tabSafe: [0, 1]
+};
+function sanitizeSettings(raw) {
+  const out = { ...DEFAULT_SETTINGS, ...(raw && typeof raw === "object" ? raw : {}) };
+  Object.keys(SETTINGS_RANGE).forEach(k => {
+    const [lo, hi] = SETTINGS_RANGE[k];
+    const v = num(out[k], DEFAULT_SETTINGS[k]);
+    out[k] = clamp(Number.isFinite(v) ? v : DEFAULT_SETTINGS[k], lo, hi);
+  });
+  if (out.sexe !== "femme") out.sexe = "homme";
+  if (out.tefMethod !== "percent") out.tefMethod = "macros";
+  if (!["auto", "light", "dark"].includes(out.theme)) out.theme = "auto";
+  out.metNet = out.metNet !== false;
+  if (out.protMax < out.protMin) out.protMax = out.protMin;
+  return out;
+}
 
 const MEAL_TYPES = [
   { id: "petit-dej",  label: "Petit-déjeuner", emoji: "🌅" },
@@ -822,6 +848,57 @@ const Store = (() => {
   return { load, save };
 })();
 
+/* Reconstruit un état sain à partir de n'importe quelle source (stockage local
+   ou fichier importé) : types corrigés, entrées illisibles écartées. */
+function sanitizeDB(raw) {
+  const src = raw && typeof raw === "object" ? raw : {};
+  const days = {};
+  const rawDays = src.days && typeof src.days === "object" && !Array.isArray(src.days) ? src.days : {};
+  Object.keys(rawDays).forEach(k => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(k)) return;
+    const d = rawDays[k];
+    if (!d || typeof d !== "object") return;
+    days[k] = {
+      date: k,
+      meals: (Array.isArray(d.meals) ? d.meals : []).filter(m => m && typeof m === "object").map(m => ({
+        id: m.id || uid(), type: m.type,
+        items: (Array.isArray(m.items) ? m.items : []).filter(it => it && typeof it === "object")
+      })),
+      steps: (() => {
+        const v = num(d.steps, NaN);                 /* « beaucoup » n'est pas 0 pas */
+        return Number.isFinite(v) ? clamp(v, 0, 200000) : null;
+      })(),
+      sessions: (Array.isArray(d.sessions) ? d.sessions : []).filter(x => x && typeof x === "object").map(x => ({
+        id: x.id || uid(), type: x.type || "autre",
+        minutes: clamp(num(x.minutes), 0, 600),
+        intensity: x.intensity || "moderee",
+        kcal: x.kcal === null || x.kcal === undefined || x.kcal === "" ? null : num(x.kcal)
+      })),
+      note: typeof d.note === "string" ? d.note : "",
+      activityConfirmed: !!d.activityConfirmed
+    };
+  });
+  const weights = {};
+  const rawW = src.weights && typeof src.weights === "object" && !Array.isArray(src.weights) ? src.weights : {};
+  Object.keys(rawW).forEach(k => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(k)) return;
+    const v = num(rawW[k]);
+    if (Number.isFinite(v) && v > 0) weights[k] = clamp(v, 20, 300);
+  });
+  const foods = (Array.isArray(src.foods) ? src.foods : []).filter(f => f && typeof f === "object" && typeof f.name === "string")
+    .map(f => ({
+      id: f.id || uid(), name: f.name, uses: Math.max(0, num(f.uses)), createdAt: num(f.createdAt) || Date.now(),
+      kcal100: num(f.kcal100), prot100: num(f.prot100), gluc100: num(f.gluc100),
+      lip100: num(f.lip100), fib100: num(f.fib100)
+    }));
+  const dishes = (Array.isArray(src.dishes) ? src.dishes : []).filter(d => d && typeof d === "object" && typeof d.name === "string")
+    .map(d => ({
+      id: d.id || uid(), name: d.name, createdAt: num(d.createdAt) || Date.now(), lastUsed: num(d.lastUsed) || 0,
+      items: (Array.isArray(d.items) ? d.items : []).filter(it => it && typeof it === "object")
+    }));
+  return { version: 2, settings: sanitizeSettings(src.settings), foods, dishes, days, weights };
+}
+
 let saveTimer = null;
 function persist(immediate) {
   clearTimeout(saveTimer);
@@ -837,9 +914,19 @@ function blankDay(date) {
 }
 function getDay(date, create) {
   let d = DB.days[date];
-  if (!d) { if (!create) return blankDay(date); d = DB.days[date] = blankDay(date); }
+  if (!d || typeof d !== "object") {
+    if (!create) return blankDay(date);
+    d = DB.days[date] = blankDay(date);
+  }
+  /* réparation en place : une journée importée peut contenir n'importe quoi */
   if (!Array.isArray(d.meals)) d.meals = [];
+  else if (d.meals.some(m => !m || typeof m !== "object")) d.meals = d.meals.filter(m => m && typeof m === "object");
   if (!Array.isArray(d.sessions)) d.sessions = [];
+  else if (d.sessions.some(x => !x || typeof x !== "object")) d.sessions = d.sessions.filter(x => x && typeof x === "object");
+  d.meals.forEach(m => {
+    if (!Array.isArray(m.items)) m.items = [];
+    else if (m.items.some(it => !it || typeof it !== "object")) m.items = m.items.filter(it => it && typeof it === "object");
+  });
   return d;
 }
 /* poids applicable à une date : dernière pesée <= date, sinon poids du profil */
@@ -858,8 +945,11 @@ function latestWeight() {
 /* Deux formes d'entrée dans un repas :
    - aliment : { id, kind:'food', foodId?, name, grams, kcal100, prot100, gluc100, lip100, fib100 }
    - plat    : { id, kind:'dish', dishId?, name, items:[aliment…] }                                */
+const ZERO_TOTALS = () => ({ kcal: 0, prot: 0, gluc: 0, lip: 0, fib: 0 });
 function itemTotals(it) {
-  if (it && it.kind === "dish") return sumTotals(it.items);
+  if (!it || typeof it !== "object") return ZERO_TOTALS();
+  /* `kind` peut manquer sur des données importées : la présence d'items tranche */
+  if (it.kind === "dish" || (it.kind !== "food" && Array.isArray(it.items))) return sumTotals(it.items);
   const f = num(it.grams) / 100;
   return {
     kcal: num(it.kcal100) * f,
@@ -870,19 +960,31 @@ function itemTotals(it) {
   };
 }
 function sumTotals(items) {
-  const t = { kcal: 0, prot: 0, gluc: 0, lip: 0, fib: 0 };
-  (items || []).forEach(it => { const x = itemTotals(it); t.kcal += x.kcal; t.prot += x.prot; t.gluc += x.gluc; t.lip += x.lip; t.fib += x.fib; });
+  const t = ZERO_TOTALS();
+  (Array.isArray(items) ? items : []).forEach(it => {
+    const x = itemTotals(it);
+    t.kcal += x.kcal; t.prot += x.prot; t.gluc += x.gluc; t.lip += x.lip; t.fib += x.fib;
+  });
   return t;
 }
-function mealTotals(meal) { return sumTotals(meal.items); }
+function mealTotals(meal) { return sumTotals(meal && meal.items); }
 function itemGrams(it) {
-  return it && it.kind === "dish" ? (it.items || []).reduce((a, b) => a + num(b.grams), 0) : num(it.grams);
+  if (!it || typeof it !== "object") return 0;
+  if (it.kind === "dish" || (it.kind !== "food" && Array.isArray(it.items))) {
+    return (it.items || []).reduce((a, b) => a + num(b && b.grams), 0);
+  }
+  return num(it.grams);
 }
 function dayFoodTotals(day) {
-  const t = { kcal: 0, prot: 0, gluc: 0, lip: 0, fib: 0 };
-  (day.meals || []).forEach(m => { const x = mealTotals(m); t.kcal += x.kcal; t.prot += x.prot; t.gluc += x.gluc; t.lip += x.lip; t.fib += x.fib; });
+  const t = ZERO_TOTALS();
+  ((day && day.meals) || []).forEach(m => {
+    const x = mealTotals(m);
+    t.kcal += x.kcal; t.prot += x.prot; t.gluc += x.gluc; t.lip += x.lip; t.fib += x.fib;
+  });
   return t;
 }
+/* diviseur toujours sain, quelle que soit la valeur saisie dans le profil */
+function kcalPerKgFat() { return clamp(num(DB.settings.kcalPerKgFat, 7700), 1000, 20000); }
 
 /* ============================================================================
    MOTEUR DE CALCUL
@@ -893,6 +995,7 @@ function bmrMifflin(sexe, poidsKg, tailleCm, age) {
   return base + (sexe === "femme" ? -161 : 5);
 }
 function sessionKcal(session, poidsKg, useNet) {
+  if (!session || typeof session !== "object") return 0;
   if (session.kcal !== null && session.kcal !== undefined && session.kcal !== "" && num(session.kcal) > 0) return num(session.kcal);
   const met = (MET_TABLE[session.type] || MET_TABLE.autre)[session.intensity] || 5;
   const eff = useNet ? Math.max(met - 1, 0.5) : met;
@@ -920,10 +1023,14 @@ function computeDay(date) {
   const food = dayFoodTotals(day);
 
   const bmr = bmrMifflin(s.sexe, poids, s.taille, s.age);
-  const stepsUsed = day.steps === null || day.steps === undefined ? null : num(day.steps);
-  const stepsForCalc = stepsUsed === null ? (day.activityConfirmed ? 0 : s.stepsGoal) : stepsUsed;
+  const stepsUsed = day.steps === null || day.steps === undefined || day.steps === "" ? null : num(day.steps);
+  /* sans pas renseignés on estime toujours, y compris si l'activité a été confirmée
+     puis le champ vidé : une dépense de 0 pas serait un mensonge silencieux */
+  const stepsForCalc = stepsUsed === null ? s.stepsGoal : stepsUsed;
   const stepsKcal = stepsForCalc * poids * s.stepCoef;
-  const sessions = (day.sessions || []).map(se => ({ ...se, kcalCalc: sessionKcal(se, poids, s.metNet) }));
+  const sessions = (Array.isArray(day.sessions) ? day.sessions : [])
+    .filter(se => se && typeof se === "object")
+    .map(se => ({ ...se, kcalCalc: sessionKcal(se, poids, s.metNet) }));
   const trainKcal = sessions.reduce((a, b) => a + b.kcalCalc, 0);
   const tefParts = tefBreakdown(food, s);
   const tef = tefParts.total;
@@ -940,7 +1047,7 @@ function computeDay(date) {
     hasFood, provisional,
     protTargetMin: s.protMin * poids,
     protTargetMax: s.protMax * poids,
-    fatKg: deficit / s.kcalPerKgFat
+    fatKg: deficit / kcalPerKgFat()
   };
 }
 function computeRange(endDate, days) {
@@ -1004,15 +1111,17 @@ const SEED_FOODS = [
   ["Miel", 304, 0.3, 82, 0, 0.2],
   ["Sucre", 400, 0, 100, 0, 0]
 ];
+const foodName = f => (f && typeof f.name === "string" ? f.name : "");
+function sortFoods() { DB.foods.sort((a, b) => foodName(a).localeCompare(foodName(b), "fr")); }
 function seedFoods() {
   let added = 0;
   SEED_FOODS.forEach(([name, kcal, p, g, l, f]) => {
-    if (DB.foods.some(x => x.name.toLowerCase() === name.toLowerCase())) return;
+    if (DB.foods.some(x => foodName(x).toLowerCase() === name.toLowerCase())) return;
     DB.foods.push({ id: uid(), name, kcal100: kcal, prot100: p, gluc100: g, lip100: l, fib100: f, uses: 0, createdAt: Date.now() });
     added++;
   });
-  DB.foods.sort((a, b) => a.name.localeCompare(b.name, "fr"));
-  persist();
+  sortFoods();
+  persist(true);
   return added;
 }
 </script>
@@ -1034,17 +1143,29 @@ function toast(msg) {
   toastTimer = setTimeout(() => t.classList.remove("on"), 2100);
 }
 
-/* ---------- pile de feuilles modales ---------- */
+/* ---------- pile de feuilles modales ----------
+   #sheetSub et #sheetBody sont des conteneurs permanents, réutilisés par toutes
+   les feuilles. Un écouteur posé dessus par une feuille survivrait donc à sa
+   fermeture et intercepterait les clics des feuilles suivantes. On remplace ces
+   nœuds par des clones vierges à chaque rendu : aucun écouteur ne peut fuir.   */
 const SheetStack = [];
+function resetSheetSlot(id) {
+  const old = document.getElementById(id);
+  const fresh = old.cloneNode(false);   /* mêmes attributs, aucun enfant, aucun écouteur */
+  old.replaceWith(fresh);
+  return fresh;
+}
 function renderSheet() {
   const s = SheetStack[SheetStack.length - 1];
   const bd = $("#sheetBackdrop");
-  if (!s) { bd.classList.remove("open"); $("#sheetSub").innerHTML = ""; $("#sheetBody").innerHTML = ""; $("#sheetFoot").innerHTML = ""; return; }
+  const sub = resetSheetSlot("sheetSub");
+  const body = resetSheetSlot("sheetBody");
+  if (!s) { bd.classList.remove("open"); $("#sheetFoot").innerHTML = ""; return; }
   $("#sheetTitle").textContent = typeof s.title === "function" ? s.title() : s.title;
   /* `body` peut être une fonction : la feuille se réaffiche alors avec l'état courant
      quand on revient d'une sous-feuille (saisie en cours conservée). */
-  $("#sheetSub").innerHTML = (typeof s.sub === "function" ? s.sub() : s.sub) || "";
-  $("#sheetBody").innerHTML = (typeof s.body === "function" ? s.body() : s.body) || "";
+  sub.innerHTML = (typeof s.sub === "function" ? s.sub() : s.sub) || "";
+  body.innerHTML = (typeof s.body === "function" ? s.body() : s.body) || "";
   const foot = $("#sheetFoot");
   foot.innerHTML = "";
   (s.footer || []).forEach((b, i) => {
@@ -1057,8 +1178,8 @@ function renderSheet() {
   foot.style.display = (s.footer && s.footer.length) ? "flex" : "none";
   $(".sheet", bd).classList.toggle("tall", !!s.tall);
   bd.classList.add("open");
-  $("#sheetBody").scrollTop = 0;
-  if (s.onMount) s.onMount($("#sheetBody"));
+  body.scrollTop = 0;
+  if (s.onMount) s.onMount(body);
 }
 function openSheet(cfg) { SheetStack.push(cfg); renderSheet(); }
 function replaceSheet(cfg) { SheetStack.pop(); SheetStack.push(cfg); renderSheet(); }
@@ -1127,7 +1248,8 @@ function confirmSheet(title, message, onYes, yesLabel) {
    VUE JOUR
    ========================================================================== */
 function getMeal(day, typeId, create) {
-  let m = day.meals.find(x => x.type === typeId);
+  if (!day || !Array.isArray(day.meals)) return { id: null, type: typeId, items: [] };
+  let m = day.meals.find(x => x && x.type === typeId);
   if (!m && create) { m = { id: uid(), type: typeId, items: [] }; day.meals.push(m); }
   return m || { id: null, type: typeId, items: [] };
 }
@@ -1168,7 +1290,7 @@ function renderJour() {
   const big = $("#heroBig");
   big.className = "big " + (isDef ? "deficit" : "surplus");
   big.innerHTML = c.hasData ? `${sign(def)} <span class="unit">kcal</span>` : `— <span class="unit">kcal</span>`;
-  const fatG = Math.abs(def) / s.kcalPerKgFat * 1000;
+  const fatG = Math.abs(def) / kcalPerKgFat() * 1000;
   $("#heroNote").innerHTML = c.hasData
     ? `≈ ${fmt(fatG)} g de graisse ${isDef ? "en théorie perdue" : "en théorie stockée"} · cible ${fmt(s.targetDeficit)} kcal`
     : `Ajoute un repas ou une activité pour démarrer la journée.`;
@@ -1196,7 +1318,7 @@ function renderJour() {
   $("#mealsList").innerHTML = MEAL_TYPES.map(mt => {
     const m = getMeal(c.day, mt.id, false);
     const t = mealTotals(m);
-    const rows = (m.items || []).map(it => {
+    const rows = (m.items || []).filter(it => it && typeof it === "object").map(it => {
       const x = itemTotals(it);
       const g = itemGrams(it);
       const sub = it.kind === "dish"
@@ -1227,8 +1349,8 @@ function renderJour() {
 
   $("#sessionsList").innerHTML = c.sessions.length
     ? c.sessions.map(se => {
-        const tl = (TRAIN_TYPES.find(t => t.id === se.type) || {}).label || se.type;
-        const il = (INTENSITIES.find(i => i.id === se.intensity) || {}).label || se.intensity;
+        const tl = (TRAIN_TYPES.find(t => t.id === se.type) || {}).label || se.type || "Séance";
+        const il = String((INTENSITIES.find(i => i.id === se.intensity) || {}).label || se.intensity || "modérée");
         return `<div class="item" style="border:1px solid var(--border);border-radius:10px;margin-bottom:6px" data-sess="${se.id}">
           <div class="nm"><b>🏋️ ${esc(tl)}</b><span>${fmt(se.minutes)} min · intensité ${esc(il.toLowerCase())}${se.kcal ? " · valeur saisie" : ""}</span></div>
           <div class="kc tnum">${fmt(se.kcalCalc)} kcal</div>
@@ -1266,12 +1388,12 @@ function openAddPicker(mealTypeId) {
   function matches() {
     if (tab === "plats") {
       return DB.dishes
-        .filter(d => !q || d.name.toLowerCase().includes(q))
+        .filter(d => d && (!q || String(d.name || "").toLowerCase().includes(q)))
         .sort((a, b) => (b.lastUsed || 0) - (a.lastUsed || 0));
     }
     return DB.foods
-      .filter(f => !q || f.name.toLowerCase().includes(q))
-      .sort((a, b) => (b.uses || 0) - (a.uses || 0) || a.name.localeCompare(b.name, "fr"))
+      .filter(f => !q || foodName(f).toLowerCase().includes(q))
+      .sort((a, b) => (b.uses || 0) - (a.uses || 0) || foodName(a).localeCompare(foodName(b), "fr"))
       .slice(0, 200);
   }
   function listHTML() {
@@ -1327,12 +1449,17 @@ function openAddPicker(mealTypeId) {
       /* le sous-en-tête est hors de `root` : on le cible globalement */
       $("#pkSeg").onclick = e => { const b = e.target.closest("button[data-t]"); if (!b) return; tab = b.dataset.t; refresh(); };
       $("#pkQ").oninput = e => { q = e.target.value.trim().toLowerCase(); refresh(); };
-      root.addEventListener("click", e => {
+      /* écouteur porté par la liste elle-même, recréée à chaque rendu */
+      $("#pkList", root).onclick = e => {
         const fb = e.target.closest("[data-food]");
-        if (fb) { const f = DB.foods.find(x => x.id === fb.dataset.food); if (f) openQuantitySheet(f, null, item => addItemToMeal(mealTypeId, item)); return; }
+        if (fb) {
+          const f = DB.foods.find(x => x.id === fb.dataset.food);
+          if (f) openQuantitySheet(f, null, item => addItemToMeal(mealTypeId, item));
+          return;
+        }
         const db_ = e.target.closest("[data-dish]");
         if (db_) { const d = DB.dishes.find(x => x.id === db_.dataset.dish); if (d) openDishBuilder(d, { mealTypeId, fromLibrary: true }); }
-      });
+      };
     }
   });
 }
@@ -1347,11 +1474,14 @@ function addItemToMeal(mealTypeId, item) {
 
 /* ---------- quantité d'un aliment (+ accès direct à ses macros) ---------- */
 function openQuantitySheet(food, existingItem, onConfirm) {
-  /* `base` porte les valeurs pour 100 g affichées et modifiables ici */
-  const base = existingItem || {
-    name: food.name, foodId: food.id || null,
-    kcal100: num(food.kcal100), prot100: num(food.prot100), gluc100: num(food.gluc100),
-    lip100: num(food.lip100), fib100: num(food.fib100)
+  /* `base` est TOUJOURS une copie de travail : tant que l'utilisateur n'a pas
+     validé, rien n'est écrit dans la journée ni dans le plat en cours. */
+  const src = existingItem || food || {};
+  const base = {
+    name: src.name,
+    foodId: existingItem ? (existingItem.foodId || null) : ((food && food.id) || null),
+    kcal100: num(src.kcal100), prot100: num(src.prot100), gluc100: num(src.gluc100),
+    lip100: num(src.lip100), fib100: num(src.fib100)
   };
   let grams = existingItem ? num(existingItem.grams) : 100;
 
@@ -1362,7 +1492,7 @@ function openQuantitySheet(food, existingItem, onConfirm) {
     </div>
     <div class="field">
       <label for="qG">Quantité consommée (g)</label>
-      <input type="number" id="qG" inputmode="decimal" step="1" min="0" value="${grams}">
+      <input type="number" id="qG" inputmode="decimal" step="1" min="0" value="${esc(grams)}">
     </div>
     <div class="chips" id="qChips">
       ${[30, 50, 80, 100, 125, 150, 200, 250, 300].map(v => `<button class="chip" data-g="${v}">${v} g</button>`).join("")}
@@ -1377,12 +1507,19 @@ function openQuantitySheet(food, existingItem, onConfirm) {
       { label: existingItem ? "Enregistrer" : "Ajouter", cls: "primary", onClick: () => {
           const g = num($("#qG").value);
           if (g <= 0) return toast("Quantité invalide");
+          const macros = {
+            name: base.name, kcal100: base.kcal100, prot100: base.prot100,
+            gluc100: base.gluc100, lip100: base.lip100, fib100: base.fib100
+          };
           const item = existingItem
-            ? Object.assign(existingItem, { grams: g })
-            : { id: uid(), kind: "food", foodId: base.foodId, name: base.name, grams: g,
-                kcal100: base.kcal100, prot100: base.prot100, gluc100: base.gluc100,
-                lip100: base.lip100, fib100: base.fib100 };
-          if (base.foodId) { const f = DB.foods.find(x => x.id === base.foodId); if (f) f.uses = (f.uses || 0) + 1; }
+            ? Object.assign(existingItem, macros, { grams: g })
+            : { id: uid(), kind: "food", foodId: base.foodId, grams: g, ...macros };
+          /* le compteur d'usage ne monte qu'à un vrai ajout, pas à chaque correction */
+          if (!existingItem && base.foodId) {
+            const f = DB.foods.find(x => x.id === base.foodId);
+            if (f) f.uses = (f.uses || 0) + 1;
+          }
+          persist();
           onConfirm(item);
         } }
     ],
@@ -1462,14 +1599,14 @@ function openFoodForm(existing, onSaved, opts) {
         <button data-u="kcal" aria-pressed="true">kcal / 100 g</button>
         <button data-u="kj" aria-pressed="false">kJ / 100 g</button>
       </div>
-      <input type="number" id="fEnergy" inputmode="decimal" step="0.1" min="0" value="${f.kcal100}" placeholder="ex. 130">
+      <input type="number" id="fEnergy" inputmode="decimal" step="0.1" min="0" value="${esc(f.kcal100)}" placeholder="ex. 130">
       <div class="hint" id="fConv">1 kcal = 4,184 kJ. La valeur en kJ est convertie automatiquement.</div>
     </div>
     <div class="grid2">
-      <div class="field"><label for="fP">Protéines / 100 g</label><input type="number" id="fP" inputmode="decimal" step="0.1" min="0" value="${f.prot100}"></div>
-      <div class="field"><label for="fG">Glucides / 100 g</label><input type="number" id="fG" inputmode="decimal" step="0.1" min="0" value="${f.gluc100}"></div>
-      <div class="field"><label for="fL">Lipides / 100 g</label><input type="number" id="fL" inputmode="decimal" step="0.1" min="0" value="${f.lip100}"></div>
-      <div class="field"><label for="fF">Fibres / 100 g</label><input type="number" id="fF" inputmode="decimal" step="0.1" min="0" value="${f.fib100}"></div>
+      <div class="field"><label for="fP">Protéines / 100 g</label><input type="number" id="fP" inputmode="decimal" step="0.1" min="0" value="${esc(f.prot100)}"></div>
+      <div class="field"><label for="fG">Glucides / 100 g</label><input type="number" id="fG" inputmode="decimal" step="0.1" min="0" value="${esc(f.gluc100)}"></div>
+      <div class="field"><label for="fL">Lipides / 100 g</label><input type="number" id="fL" inputmode="decimal" step="0.1" min="0" value="${esc(f.lip100)}"></div>
+      <div class="field"><label for="fF">Fibres / 100 g</label><input type="number" id="fF" inputmode="decimal" step="0.1" min="0" value="${esc(f.fib100)}"></div>
     </div>
     <div class="banner info" id="fCheck" style="display:none"></div>
     ${refs.dish + refs.day > 0 ? `
@@ -1510,7 +1647,7 @@ function openFoodForm(existing, onSaved, opts) {
             saved = { id: uid(), uses: 0, createdAt: Date.now(), ...data };
             DB.foods.push(saved);
           }
-          DB.foods.sort((a, b) => a.name.localeCompare(b.name, "fr"));
+          sortFoods();
           persist();
           if (onSaved) onSaved(saved); else { closeSheet(); render(); toast("Aliment enregistré"); }
         } }
@@ -1563,8 +1700,8 @@ function cloneItems(items) {
 /* Sélecteur d'aliment seul (pour ajouter un ingrédient) */
 function openFoodPicker(onPick) {
   let q = "";
-  const matches = () => DB.foods.filter(f => !q || f.name.toLowerCase().includes(q))
-    .sort((a, b) => (b.uses || 0) - (a.uses || 0) || a.name.localeCompare(b.name, "fr")).slice(0, 200);
+  const matches = () => DB.foods.filter(f => !q || foodName(f).toLowerCase().includes(q))
+    .sort((a, b) => (b.uses || 0) - (a.uses || 0) || foodName(a).localeCompare(foodName(b), "fr")).slice(0, 200);
   const list = () => {
     const arr = matches();
     if (!arr.length) return `<div class="empty">Aucun aliment ne correspond.<br>Crée-le avec « Nouvel aliment ».</div>`;
@@ -1573,6 +1710,9 @@ function openFoodPicker(onPick) {
       <span class="go">${ICON.chev}</span></button>`).join("");
   };
   const count = () => { const n = matches().length; return `${n} aliment${n > 1 ? "s" : ""}${q ? " trouvé" + (n > 1 ? "s" : "") : ""}`; };
+  /* retire le sélecteur de la pile AVANT de rendre la main, pour que la suite
+     du parcours s'empile sur la feuille appelante et non sur le sélecteur */
+  const pick = f => { closeSheet(); onPick(f); };
   openSheet({
     title: "Choisir un aliment",
     tall: true,
@@ -1581,7 +1721,8 @@ function openFoodPicker(onPick) {
       <div id="fpL">${list()}</div>`,
     footer: [
       { label: "Annuler", cls: "ghost", onClick: closeSheet },
-      { label: ICON.plus + " Nouvel aliment", cls: "primary", onClick: () => openFoodForm(null, f => { closeSheet(); onPick(f); }) }
+      { label: ICON.plus + " Nouvel aliment", cls: "primary",
+        onClick: () => openFoodForm(null, f => { closeSheet(); pick(f); }) }  /* ferme le formulaire, puis le sélecteur */
     ],
     onMount(root) {
       $("#fpQ").oninput = e => {
@@ -1593,7 +1734,7 @@ function openFoodPicker(onPick) {
       $("#fpL", root).onclick = e => {
         const b = e.target.closest("[data-food]"); if (!b) return;
         const f = DB.foods.find(x => x.id === b.dataset.food);
-        if (f) { closeSheet(); onPick(f); }
+        if (f) pick(f);
       };
       setTimeout(() => { const el = $("#fpQ"); if (el) el.focus(); }, 120);
     }
@@ -1609,10 +1750,19 @@ function openFoodPicker(onPick) {
  */
 function openDishBuilder(source, opts) {
   opts = opts || {};
-  const editingLibraryDish = !!(opts.library && source);
-  let name = source ? source.name : "";
-  let items = cloneItems(source ? source.items : []);
-  let saveToLibrary = !source;      /* nouveau plat → proposé à l'enregistrement */
+  const dayItem = opts.dayItem || null;
+  /* Fiche de référence en bibliothèque. Sur le chemin « modifier un plat déjà posé
+     dans la journée » elle doit être RÉSOLUE ici : l'appelant ne transmet qu'une copie
+     de l'entrée du jour, et écrire dedans ne toucherait pas la bibliothèque. */
+  const libDish = dayItem
+    ? (dayItem.dishId ? (DB.dishes.find(d => d.id === dayItem.dishId) || null) : null)
+    : (source || null);
+  const editingLibraryDish = !!(opts.library && libDish);
+  const origin = dayItem || source;
+  let name = origin ? origin.name : "";
+  let items = cloneItems(origin ? origin.items : []);
+  let saveToLibrary = !origin;      /* nouveau plat → proposé à l'enregistrement */
+  let firstMount = true;
   let updateLibrary = false;        /* plat existant modifié → mise à jour */
 
   const totalsCard = () => {
@@ -1644,14 +1794,17 @@ function openDishBuilder(source, opts) {
     $("#dRows").innerHTML = rows();
     $("#dTot").innerHTML = totalsCard();
   }
+  const newDish = () => ({ id: uid(), name, items: cloneItems(items), createdAt: Date.now(), lastUsed: Date.now() });
+
   function optsHTML() {
     if (opts.library) return "";
-    if (!source) {
-      return `<label class="kv" style="cursor:pointer"><span class="k">Enregistrer ce plat pour le réutiliser</span>
-        <input type="checkbox" id="dSave" ${saveToLibrary ? "checked" : ""}></label>`;
+    /* la case n'est proposée que si une vraie fiche existe encore en bibliothèque */
+    if (libDish) {
+      return `<label class="kv" style="cursor:pointer"><span class="k">Mettre à jour le plat enregistré « ${esc(libDish.name)} »</span>
+        <input type="checkbox" id="dUpd" ${updateLibrary ? "checked" : ""}></label>`;
     }
-    return `<label class="kv" style="cursor:pointer"><span class="k">Mettre à jour le plat enregistré « ${esc(source.name)} »</span>
-      <input type="checkbox" id="dUpd" ${updateLibrary ? "checked" : ""}></label>`;
+    return `<label class="kv" style="cursor:pointer"><span class="k">Enregistrer ce plat pour le réutiliser</span>
+      <input type="checkbox" id="dSave" ${saveToLibrary ? "checked" : ""}></label>`;
   }
 
   function commit() {
@@ -1661,39 +1814,43 @@ function openDishBuilder(source, opts) {
 
     /* bibliothèque : création ou édition d'un plat */
     if (opts.library) {
-      if (editingLibraryDish) { source.name = name; source.items = cloneItems(items); }
-      else DB.dishes.push({ id: uid(), name, items: cloneItems(items), createdAt: Date.now(), lastUsed: Date.now() });
-      persist(); closeSheet(); render(); toast("Plat enregistré");
+      if (editingLibraryDish) { libDish.name = name; libDish.items = cloneItems(items); }
+      else DB.dishes.push(newDish());
+      persist(true); closeSheet(); render(); toast("Plat enregistré");
       return;
     }
     /* modification d'un plat déjà posé dans la journée */
-    if (opts.dayItem) {
-      opts.dayItem.name = name;
-      opts.dayItem.items = cloneItems(items);
-      if ($("#dUpd") && $("#dUpd").checked && source) { source.name = name; source.items = cloneItems(items); }
-      persist(); closeAllSheets(); render(); toast("Plat mis à jour");
+    if (dayItem) {
+      dayItem.name = name;
+      dayItem.items = cloneItems(items);
+      if (libDish && $("#dUpd") && $("#dUpd").checked) {
+        libDish.name = name; libDish.items = cloneItems(items); libDish.lastUsed = Date.now();
+      } else if (!libDish && $("#dSave") && $("#dSave").checked) {
+        const d = newDish(); DB.dishes.push(d); dayItem.dishId = d.id;
+      }
+      persist(true); closeAllSheets(); render(); toast("Plat mis à jour");
       return;
     }
     /* ajout au repas */
-    let dishId = source ? source.id : null;
-    if (!source && $("#dSave") && $("#dSave").checked) {
-      const d = { id: uid(), name, items: cloneItems(items), createdAt: Date.now(), lastUsed: Date.now() };
-      DB.dishes.push(d); dishId = d.id;
+    let dishId = libDish ? libDish.id : null;
+    if (!libDish && $("#dSave") && $("#dSave").checked) {
+      const d = newDish(); DB.dishes.push(d); dishId = d.id;
     }
-    if (source) {
-      source.lastUsed = Date.now();
-      if ($("#dUpd") && $("#dUpd").checked) { source.name = name; source.items = cloneItems(items); }
+    if (libDish) {
+      libDish.lastUsed = Date.now();
+      if ($("#dUpd") && $("#dUpd").checked) { libDish.name = name; libDish.items = cloneItems(items); }
     }
     addItemToMeal(opts.mealTypeId, { id: uid(), kind: "dish", dishId, name, items: cloneItems(items) });
   }
 
   openSheet({
     title: opts.library ? (editingLibraryDish ? "Modifier le plat" : "Nouveau plat")
-         : (source ? "Réutiliser — " + source.name : "Nouveau plat"),
+         : dayItem ? "Modifier — " + (dayItem.name || "plat")
+         : (libDish ? "Réutiliser — " + libDish.name : "Nouveau plat"),
     body: body,
     footer: [
       { label: "Annuler", cls: "ghost", onClick: closeSheet },
-      { label: opts.library ? "Enregistrer" : (opts.dayItem ? "Enregistrer" : "Ajouter au repas"), cls: "primary", onClick: commit }
+      { label: (opts.library || dayItem) ? "Enregistrer" : "Ajouter au repas", cls: "primary", onClick: commit }
     ],
     onMount(root) {
       $("#dOpts", root).innerHTML = optsHTML();
@@ -1702,7 +1859,7 @@ function openDishBuilder(source, opts) {
       if (cbS) cbS.onchange = e => { saveToLibrary = e.target.checked; };
       if (cbU) cbU.onchange = e => { updateLibrary = e.target.checked; };
       $("#dAdd", root).onclick = () => openFoodPicker(f => {
-        openQuantitySheet(f, null, item => { items.push(item); closeSheet(); refresh(); });
+        openQuantitySheet(f, null, item => { items.push(item); closeSheet(); refresh(); persist(); });
       });
       $("#dRows", root).addEventListener("click", e => {
         const del = e.target.closest("[data-delIng]");
@@ -1710,10 +1867,11 @@ function openDishBuilder(source, opts) {
         const row = e.target.closest("[data-ing]");
         if (row) {
           const it = items.find(x => x.id === row.dataset.ing);
-          if (it) openQuantitySheet(it, it, () => { closeSheet(); refresh(); });
+          if (it) openQuantitySheet(it, it, () => { closeSheet(); refresh(); });   /* items est une copie de travail */
         }
       });
-      if (!source) setTimeout(() => $("#dName", root).focus(), 120);
+      /* le focus initial ne doit pas revenir à chaque retour d'une sous-feuille */
+      if (!origin && firstMount) { firstMount = false; setTimeout(() => { const el = $("#dName", root); if (el) el.focus(); }, 120); }
     }
   });
 }
@@ -1729,7 +1887,7 @@ function renderBiblio() {
   const list = $("#bibList");
 
   if (UI.bibTab === "plats") {
-    const arr = DB.dishes.filter(d => !q || d.name.toLowerCase().includes(q))
+    const arr = DB.dishes.filter(d => d && (!q || String(d.name || "").toLowerCase().includes(q)))
       .sort((a, b) => (b.lastUsed || 0) - (a.lastUsed || 0));
     list.innerHTML = arr.length ? arr.map(d => {
       const t = sumTotals(d.items);
@@ -1751,8 +1909,8 @@ function renderBiblio() {
       </div>`;
     }).join("") : `<div class="card"><div class="empty">Aucun plat enregistré.<br>Crée ton premier plat : il sera réutilisable chaque jour, avec quantités modifiables.</div></div>`;
   } else {
-    const arr = DB.foods.filter(f => !q || f.name.toLowerCase().includes(q))
-      .sort((a, b) => a.name.localeCompare(b.name, "fr"));
+    const arr = DB.foods.filter(f => !q || foodName(f).toLowerCase().includes(q))
+      .sort((a, b) => foodName(a).localeCompare(foodName(b), "fr"));
     list.innerHTML = arr.length ? arr.map(f => `
       <div class="res" data-editfood="${f.id}">
         <div class="nm wrap"><b>${esc(f.name)}</b>
@@ -1775,6 +1933,11 @@ const CH = {
   css(v) { return getComputedStyle(document.documentElement).getPropertyValue(v).trim(); }
 };
 function niceTicks(min, max, count) {
+  /* jamais de graduations vides : toute borne non finie ou inversée est ramenée
+     à un intervalle exploitable, sinon les tracés reçoivent des coordonnées NaN */
+  if (!Number.isFinite(min)) min = 0;
+  if (!Number.isFinite(max)) max = min + 1;
+  if (max < min) { const t = min; min = max; max = t; }
   if (min === max) { max = min + 1; }
   const span = max - min;
   const raw = span / Math.max(count, 1);
@@ -1783,8 +1946,10 @@ function niceTicks(min, max, count) {
   const step = (norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 2.5 ? 2.5 : norm <= 5 ? 5 : 10) * mag;
   const lo = Math.floor(min / step) * step, hi = Math.ceil(max / step) * step;
   const out = [];
-  for (let v = lo; v <= hi + step * 1e-9; v += step) out.push(Math.round(v * 1e6) / 1e6);
-  return out;
+  if (Number.isFinite(lo) && Number.isFinite(hi) && step > 0) {
+    for (let v = lo; v <= hi + step * 1e-9; v += step) out.push(Math.round(v * 1e6) / 1e6);
+  }
+  return out.length ? out : [0, 1];
 }
 /* barre à extrémité arrondie côté valeur, ancrée à la ligne de base */
 function barPath(x, yTop, w, h, r, up) {
@@ -1825,14 +1990,19 @@ function attachHover(host, svg, rows, band, tipHTML) {
   const cursor = svg.querySelector(".cursor");
   function at(clientX) {
     const r = svg.getBoundingClientRect();
-    const x = clientX - r.left;
+    if (!r.width || !rows.length) return;
+    /* le SVG peut être mis à l'échelle (écran plus étroit que la largeur logique) :
+       on convertit la position du doigt en unités du viewBox avant de chercher la barre */
+    const vbW = (svg.viewBox && svg.viewBox.baseVal && svg.viewBox.baseVal.width) || r.width;
+    const scale = vbW / r.width;
+    const x = (clientX - r.left) * scale;
     const i = clamp(Math.floor((x - CH.padL) / band), 0, rows.length - 1);
     if (i < 0 || !rows[i]) return;
     tip.innerHTML = tipHTML(rows[i], i);
     tip.classList.add("on");
     const cx = CH.padL + band * (i + 0.5);
     const tw = tip.offsetWidth;
-    tip.style.left = clamp(cx, tw / 2 + 4, r.width - tw / 2 - 4) + "px";
+    tip.style.left = clamp(cx / scale, tw / 2 + 4, r.width - tw / 2 - 4) + "px";
     tip.style.top = Math.max(CH.padT + 4, 34) + "px";
     if (cursor) { cursor.setAttribute("x1", cx); cursor.setAttribute("x2", cx); cursor.style.opacity = "1"; }
   }
@@ -1882,9 +2052,9 @@ function chartCaloriesVsDepense(host, rows) {
   </svg>`;
   attachHover(host, host.querySelector("svg"), rows, band, r => `
     <div class="th">${dayLabel(r.date)}</div>
-    <div class="tr">${swatch("--s2")}<span class="tk">Consommé</span><span class="tv">${fmt(r.food.kcal)}</span></div>
-    <div class="tr">${swatch("--s1", true)}<span class="tk">Dépense</span><span class="tv">${fmt(r.depense)}</span></div>
-    <div class="tr"><span class="sw" style="background:transparent"></span><span class="tk">${r.deficit >= 0 ? "Déficit" : "Surplus"}</span><span class="tv">${sign(r.deficit)}</span></div>`);
+    <div class="tr">${swatch("--s2")}<span class="tk">Consommé</span><span class="tv">${r.hasFood ? fmt(r.food.kcal) : "—"}</span></div>
+    <div class="tr">${swatch("--s1", true)}<span class="tk">Dépense</span><span class="tv">${r.hasData ? fmt(r.depense) : "—"}</span></div>
+    <div class="tr"><span class="sw" style="background:transparent"></span><span class="tk">${r.deficit >= 0 ? "Déficit" : "Surplus"}</span><span class="tv">${r.hasFood ? sign(r.deficit) : "—"}</span></div>`);
 }
 
 /* ---------------------------------------------------------------------------
@@ -1922,10 +2092,12 @@ function chartDeficit(host, rows, target) {
     <line x1="${CH.padL}" x2="${w - CH.padR}" y1="${zero}" y2="${zero}" stroke="var(--axis)" stroke-width="1.2"/>
     ${xLabels(rows, w, band, step, r => rows.length <= 8 ? dayDow(r.date) : dayShort(r.date), h - 6)}
   </svg>`;
-  attachHover(host, host.querySelector("svg"), rows, band, r => `
+  attachHover(host, host.querySelector("svg"), rows, band, r => r.hasFood ? `
     <div class="th">${dayLabel(r.date)}</div>
     <div class="tr">${swatch(r.deficit >= 0 ? "--s1" : "--critical")}<span class="tk">${r.deficit >= 0 ? "Déficit" : "Surplus"}</span><span class="tv">${sign(r.deficit)} kcal</span></div>
-    <div class="tr"><span class="sw" style="background:transparent"></span><span class="tk">Graisse</span><span class="tv">${(r.deficit / DB.settings.kcalPerKgFat * 1000 >= 0 ? "+" : "−") + fmt(Math.abs(r.deficit / DB.settings.kcalPerKgFat * 1000))} g</span></div>`);
+    <div class="tr"><span class="sw" style="background:transparent"></span><span class="tk">Graisse</span><span class="tv">${(r.deficit >= 0 ? "−" : "+") + fmt(Math.abs(r.deficit / kcalPerKgFat() * 1000))} g</span></div>` : `
+    <div class="th">${dayLabel(r.date)}</div>
+    <div class="tr"><span class="sw" style="background:transparent"></span><span class="tk">Aucun repas enregistré</span></div>`);
 }
 
 /* ---------------------------------------------------------------------------
@@ -1934,7 +2106,7 @@ function chartDeficit(host, rows, target) {
 function chartCumul(host, rows) {
   const { w, h } = hostSize(host, 160);
   let acc = 0;
-  const cum = rows.map(r => { acc += r.hasData ? r.deficit : 0; return { date: r.date, v: acc, d: r.deficit, has: r.hasData }; });
+  const cum = rows.map(r => { acc += r.hasFood ? r.deficit : 0; return { date: r.date, v: acc, d: r.deficit, has: r.hasFood }; });
   const mn = Math.min(0, ...cum.map(c => c.v)), mx = Math.max(0, ...cum.map(c => c.v));
   const ticks = niceTicks(mn, mx === mn ? mn + 100 : mx, 4);
   const lo = ticks[0], hi = ticks[ticks.length - 1];
@@ -1957,7 +2129,7 @@ function chartCumul(host, rows) {
   attachHover(host, host.querySelector("svg"), cum, band, c => `
     <div class="th">${dayLabel(c.date)}</div>
     <div class="tr">${swatch("--s1", true)}<span class="tk">Cumul</span><span class="tv">${sign(c.v)} kcal</span></div>
-    <div class="tr"><span class="sw" style="background:transparent"></span><span class="tk">Graisse</span><span class="tv">${(c.v >= 0 ? "−" : "+") + fmt1(Math.abs(c.v) / DB.settings.kcalPerKgFat)} kg</span></div>`);
+    <div class="tr"><span class="sw" style="background:transparent"></span><span class="tk">Graisse</span><span class="tv">${(c.v >= 0 ? "−" : "+") + fmt1(Math.abs(c.v) / kcalPerKgFat())} kg</span></div>`);
 }
 
 /* ---------------------------------------------------------------------------
@@ -2049,11 +2221,23 @@ function renderAnalyse() {
   $$("#segPeriod button").forEach(b => b.setAttribute("aria-pressed", String(+b.dataset.p === UI.period)));
   const s = DB.settings;
   const rows = computeRange(todayISO(), UI.period);
-  const act = rows.filter(r => r.hasData);
+  const today = todayISO();
+  /* Une journée n'entre dans les moyennes nutritionnelles que si des aliments y
+     sont enregistrés — sinon elle compterait comme « 0 kcal consommé » et gonflerait
+     le déficit. La journée en cours n'y entre qu'une fois l'activité confirmée,
+     pour qu'un petit-déjeuner à 9 h ne fasse pas croire à un déficit record. */
+  const usable = r => r.date !== today || r.day.activityConfirmed;
+  const act = rows.filter(r => r.hasFood && usable(r));
+  const actA = rows.filter(r => r.hasData && usable(r));     /* activité : pas et séances */
+  const pendingToday = rows.some(r => r.date === today && r.hasData && !r.day.activityConfirmed);
   const body = $("#analyseBody");
 
   if (!act.length) {
-    body.innerHTML = `<div class="card"><div class="empty">Aucune donnée sur cette période.<br>Renseigne tes repas et ton activité dans l'onglet Jour.</div></div>`;
+    body.innerHTML = `<div class="card"><div class="empty">${
+      pendingToday
+        ? "La journée en cours n'entre dans l'analyse qu'une fois son activité confirmée.<br>Confirme les pas et l'entraînement dans l'onglet Jour."
+        : "Aucun repas enregistré sur cette période.<br>Renseigne tes repas dans l'onglet Jour."
+    }</div></div>`;
     return;
   }
 
@@ -2067,11 +2251,11 @@ function renderAnalyse() {
   const avgGluc = sum(r => r.food.gluc) / n;
   const avgLip = sum(r => r.food.lip) / n;
   const avgFib = sum(r => r.food.fib) / n;
-  const stepDays = act.filter(r => r.stepsUsed !== null);
+  const stepDays = actA.filter(r => r.stepsUsed !== null);
   const avgSteps = stepDays.length ? stepDays.reduce((a, r) => a + r.stepsUsed, 0) / stepDays.length : 0;
-  const allSessions = act.flatMap(r => r.sessions);
+  const allSessions = actA.flatMap(r => r.sessions);
   const trainMin = allSessions.reduce((a, x) => a + num(x.minutes), 0);
-  const fatKg = totalDef / s.kcalPerKgFat;
+  const fatKg = totalDef / kcalPerKgFat();
   const provisionals = act.filter(r => r.provisional).length;
 
   /* poids réel sur la période */
@@ -2079,11 +2263,20 @@ function renderAnalyse() {
   const wStart = wKeys.length ? DB.weights[wKeys[0]] : null;
   const wEnd = wKeys.length ? DB.weights[wKeys[wKeys.length - 1]] : null;
   const wDelta = wStart !== null && wKeys.length > 1 ? wEnd - wStart : null;
+  /* déficit accumulé sur le seul intervalle réellement encadré par deux pesées :
+     comparer une perte mesurée sur 2 jours à une théorie calculée sur 30 n'a pas de sens */
+  const defBetweenWeighings = wDelta === null ? null
+    : act.filter(r => r.date >= wKeys[0] && r.date <= wKeys[wKeys.length - 1])
+         .reduce((a, r) => a + r.deficit, 0);
+  const fatKgWeighed = defBetweenWeighings === null ? null : defBetweenWeighings / kcalPerKgFat();
 
-  const best = act.slice().sort((a, b) => b.deficit - a.deficit).slice(0, 2);
-  const worst = act.slice().sort((a, b) => a.deficit - b.deficit).slice(0, 2);
+  /* meilleurs / moins bons jours : sans recoupement, et seulement si l'échantillon le permet */
+  const ranked = act.slice().sort((a, b) => b.deficit - a.deficit);
+  const nExtremes = ranked.length >= 6 ? 2 : 1;
+  const best = ranked.length >= 3 ? ranked.slice(0, nExtremes) : [];
+  const worst = ranked.length >= 3 ? ranked.slice(-nExtremes).reverse() : [];
   const cvKcal = avgKcal > 0 ? stdev(act.map(r => r.food.kcal)) / avgKcal * 100 : 0;
-  const protPerKg = avgProt / latestWeight();
+  const protPerKg = avgProt / Math.max(latestWeight(), 1);
   const daysProtOK = act.filter(r => r.food.prot >= r.protTargetMin).length;
 
   const periodLabel = UI.period === 7 ? "7 derniers jours" : UI.period === 30 ? "30 derniers jours" : "90 derniers jours";
@@ -2092,6 +2285,9 @@ function renderAnalyse() {
     ${provisionals ? `<div class="banner warn"><span class="ic">${ICON.warn}</span><div>
       <b>${provisionals} jour${provisionals > 1 ? "s" : ""} en bilan provisoire</b>
       L'activité n'y est pas confirmée : les déficits correspondants restent estimatifs.</div></div>` : ""}
+    ${pendingToday ? `<div class="banner info"><span class="ic">${ICON.warn}</span><div>
+      <b>Journée en cours exclue</b>
+      Elle rejoindra l'analyse une fois son activité confirmée, pour ne pas fausser les moyennes.</div></div>` : ""}
 
     <div class="card">
       <div class="card-head"><h3>Résumé — ${periodLabel}</h3><span class="spacer"></span>
@@ -2164,12 +2360,23 @@ function renderAnalyse() {
     <div class="card">
       <div class="card-head"><h3>Analyse</h3></div>
       <div style="font-size:13px;line-height:1.6;color:var(--ink-2)">
-        <p style="margin:0 0 8px"><b style="color:var(--ink)">Meilleurs jours :</b> ${best.map(r => `${dayLabel(r.date)} (${sign(r.deficit)} kcal)`).join(", ")}.</p>
-        <p style="margin:0 0 8px"><b style="color:var(--ink)">Jours les moins optimaux :</b> ${worst.map(r => `${dayLabel(r.date)} (${sign(r.deficit)} kcal)`).join(", ")}.</p>
-        <p style="margin:0 0 8px"><b style="color:var(--ink)">Régularité des calories :</b> variation de ${r0(cvKcal)} % autour de la moyenne — ${cvKcal < 12 ? "très régulier" : cvKcal < 22 ? "correct" : "irrégulier, les écarts d'un jour à l'autre limitent la lisibilité du suivi"}.</p>
+        ${best.length ? `<p style="margin:0 0 8px"><b style="color:var(--ink)">Meilleurs jours :</b> ${best.map(r => `${dayLabel(r.date)} (${sign(r.deficit)} kcal)`).join(", ")}.</p>` : ""}
+        ${worst.length ? `<p style="margin:0 0 8px"><b style="color:var(--ink)">Jours les moins optimaux :</b> ${worst.map(r => `${dayLabel(r.date)} (${sign(r.deficit)} kcal)`).join(", ")}.</p>` : ""}
+        ${n >= 3 ? `<p style="margin:0 0 8px"><b style="color:var(--ink)">Régularité des calories :</b> variation de ${r0(cvKcal)} % autour de la moyenne — ${cvKcal < 12 ? "très régulier" : cvKcal < 22 ? "correct" : "irrégulier, les écarts d'un jour à l'autre limitent la lisibilité du suivi"}.</p>` : ""}
         <p style="margin:0 0 8px"><b style="color:var(--ink)">Protéines :</b> ${daysProtOK}/${n} jours au-dessus de l'objectif minimum (${fmt1(protPerKg)} g/kg en moyenne) — ${protPerKg >= s.protMin ? "niveau favorable au maintien musculaire en déficit" : "en dessous de la fourchette visée pour préserver la masse musculaire"}.</p>
         <p style="margin:0 0 8px"><b style="color:var(--ink)">Pas et entraînement :</b> ${fmt(avgSteps)} pas/jour en moyenne (${avgSteps >= s.stepsGoal ? "objectif atteint" : `${fmt(s.stepsGoal - avgSteps)} de moins que l'objectif`}) et ${allSessions.length} séance${allSessions.length > 1 ? "s" : ""} pour ${fmt(trainMin)} min. La dépense liée aux pas représente ${r0(sum(r => r.stepsKcal) / sum(r => r.depense) * 100)} % de la dépense totale, l'entraînement ${r0(sum(r => r.trainKcal) / sum(r => r.depense) * 100)} % et le TEF ${r0(sum(r => r.tef) / sum(r => r.depense) * 100)} %.</p>
-        ${wDelta !== null ? `<p style="margin:0 0 8px"><b style="color:var(--ink)">Poids mesuré vs théorie :</b> ${(wDelta <= 0 ? "−" : "+") + fmt1(Math.abs(wDelta))} kg constatés contre ${(fatKg >= 0 ? "−" : "+") + fmt1(Math.abs(fatKg))} kg théoriques. ${Math.abs(Math.abs(wDelta) - Math.abs(fatKg)) > 0.8 ? "L'écart s'explique surtout par l'eau, le glycogène, le sel et le contenu digestif, pas uniquement par la graisse." : "Les deux valeurs sont cohérentes."}</p>` : ""}
+        ${wDelta !== null && fatKgWeighed !== null ? (() => {
+          /* wDelta est signé (négatif = perte) ; fatKgWeighed est positif en déficit.
+             Une perte de 0,5 kg face à 0,5 kg théorique donne donc wDelta + fatKg ≈ 0. */
+          const ecart = Math.abs(wDelta + fatKgWeighed);
+          return `<p style="margin:0 0 8px"><b style="color:var(--ink)">Poids mesuré vs théorie :</b>
+            ${(wDelta <= 0 ? "−" : "+") + fmt1(Math.abs(wDelta))} kg constatés du ${dayShort(wKeys[0])} au ${dayShort(wKeys[wKeys.length - 1])},
+            contre ${(fatKgWeighed >= 0 ? "−" : "+") + fmt1(Math.abs(fatKgWeighed))} kg théoriques sur le même intervalle
+            (écart ${fmt1(ecart)} kg).
+            ${ecart > 0.8
+              ? "L'écart s'explique surtout par l'eau, le glycogène, le sel et le contenu digestif, pas uniquement par la graisse."
+              : "Les deux valeurs sont cohérentes."}</p>`;
+        })() : ""}
         <p style="margin:0"><b style="color:var(--ink)">Précision du suivi :</b> ${provisionals === 0 ? "élevée — activité confirmée sur tous les jours renseignés" : provisionals <= n / 3 ? "moyenne — quelques jours sans activité confirmée" : "faible — trop de jours sans pas ni entraînement confirmés"}.</p>
       </div>
     </div>
@@ -2195,7 +2402,9 @@ function tableHTML(rows) {
       <th>Jour</th><th>kcal</th><th>Prot</th><th>Gluc</th><th>Lip</th><th>Fibres</th>
       <th>Pas</th><th>Entr.</th><th>Durée</th><th>Dépense</th><th>Déf./Surp.</th><th>Cumul</th>
     </tr></thead><tbody>${rows.map(r => {
-      if (r.hasData) acc += r.deficit;
+      /* le cumul ne compte que les journées où des repas sont enregistrés :
+         un jour sans alimentation saisie n'est pas un jour à −2 300 kcal */
+      if (r.hasFood) acc += r.deficit;
       const mins = r.sessions.reduce((a, x) => a + num(x.minutes), 0);
       return `<tr>
         <td>${dayShort(r.date)} ${dayDow(r.date)}</td>
@@ -2208,7 +2417,7 @@ function tableHTML(rows) {
         <td>${r.sessions.length ? r.sessions.length : "—"}</td>
         <td>${mins ? fmt(mins) + " min" : "—"}</td>
         <td>${r.hasData ? fmt(r.depense) : "—"}</td>
-        <td class="${r.hasData ? (r.deficit >= 0 ? "pos" : "neg") : ""}">${r.hasData ? sign(r.deficit) : "—"}</td>
+        <td class="${r.hasFood ? (r.deficit >= 0 ? "pos" : "neg") : ""}">${r.hasFood ? sign(r.deficit) : "—"}</td>
         <td class="${acc >= 0 ? "pos" : "neg"}">${sign(acc)}</td>
       </tr>`;
     }).join("")}</tbody></table>`;
@@ -2217,13 +2426,19 @@ function tableHTML(rows) {
 function recoHTML(m) {
   const s = DB.settings;
   const out = [];
-  const targetKcal = m.avgDep - s.targetDeficit;
-  out.push(`<b style="color:var(--ink)">Objectif calorique :</b> environ ${fmt(targetKcal)} kcal/jour pour tenir un déficit de ${fmt(s.targetDeficit)} kcal avec ta dépense moyenne actuelle (${fmt(m.avgDep)} kcal).`);
-  out.push(`<b style="color:var(--ink)">Protéines :</b> ${fmt(s.protMin * latestWeight())}–${fmt(s.protMax * latestWeight())} g/jour${m.protPerKg < s.protMin ? ` — il manque environ ${fmt(s.protMin * latestWeight() - m.avgProt)} g/jour en moyenne.` : " — cible actuellement tenue."}`);
-  const remKcal = Math.max(targetKcal - s.protMin * latestWeight() * 4, 0);
+  const w = Math.max(latestWeight(), 1);
+  const floor = bmrMifflin(s.sexe, w, s.taille, s.age);   /* ne jamais conseiller moins que le métabolisme de base */
+  const rawTarget = m.avgDep - s.targetDeficit;
+  const targetKcal = Math.max(rawTarget, floor);
+  out.push(`<b style="color:var(--ink)">Objectif calorique :</b> environ ${fmt(targetKcal)} kcal/jour${
+    rawTarget < floor
+      ? ` — le déficit visé (${fmt(s.targetDeficit)} kcal) dépasse ce que ta dépense permet sans passer sous ton métabolisme de base (${fmt(floor)} kcal). Réduis l'objectif de déficit ou augmente l'activité.`
+      : ` pour tenir un déficit de ${fmt(s.targetDeficit)} kcal avec ta dépense moyenne actuelle (${fmt(m.avgDep)} kcal).`}`);
+  out.push(`<b style="color:var(--ink)">Protéines :</b> ${fmt(s.protMin * w)}–${fmt(s.protMax * w)} g/jour${m.protPerKg < s.protMin ? ` — il manque environ ${fmt(s.protMin * w - m.avgProt)} g/jour en moyenne.` : " — cible actuellement tenue."}`);
+  const remKcal = Math.max(targetKcal - s.protMin * w * 4, 0);
   out.push(`<b style="color:var(--ink)">Glucides / lipides :</b> une fois les protéines couvertes, il reste ≈ ${fmt(remKcal)} kcal. Un repère praticable : ${fmt(remKcal * 0.6 / 4)} g de glucides et ${fmt(remKcal * 0.4 / 9)} g de lipides, en gardant les glucides autour des séances.`);
   if (m.avgFib < 25) out.push(`<b style="color:var(--ink)">Fibres :</b> ${fmt(m.avgFib)} g/jour en moyenne — viser 25–30 g aide la satiété en déficit (légumes, légumineuses, céréales complètes).`);
-  out.push(`<b style="color:var(--ink)">Pas :</b> ${m.avgSteps >= s.stepsGoal ? `objectif de ${fmt(s.stepsGoal)} tenu, le maintenir suffit.` : `passer de ${fmt(m.avgSteps)} à ${fmt(s.stepsGoal)} pas/jour ajouterait ≈ ${fmt((s.stepsGoal - m.avgSteps) * latestWeight() * s.stepCoef)} kcal/jour.`}`);
+  out.push(`<b style="color:var(--ink)">Pas :</b> ${m.avgSteps >= s.stepsGoal ? `objectif de ${fmt(s.stepsGoal)} tenu, le maintenir suffit.` : `passer de ${fmt(m.avgSteps)} à ${fmt(s.stepsGoal)} pas/jour ajouterait ≈ ${fmt((s.stepsGoal - m.avgSteps) * w * s.stepCoef)} kcal/jour.`}`);
   out.push(`<b style="color:var(--ink)">Entraînement :</b> ${m.allSessions.length} séance${m.allSessions.length > 1 ? "s" : ""} sur la période. Maintenir ${s.trainGoal} séances/semaine de musculation reste le principal levier de conservation musculaire en déficit.`);
   if (m.cvKcal > 22) out.push(`<b style="color:var(--ink)">Régularité :</b> resserrer l'écart entre les jours hauts et bas rendrait le déficit plus lisible et plus facile à corriger.`);
   out.push(`<b style="color:var(--ink)">Précision :</b> confirmer chaque soir les pas et l'entraînement, et peser les aliments plutôt que les estimer, réduit fortement l'incertitude du déficit calculé.`);
@@ -2264,7 +2479,7 @@ function renderProfil() {
        Le taux ci-dessous ne s'applique qu'aux calories saisies sans détail des macros.`
     : `Forfait appliqué à l'ensemble des calories du jour. Moins précis : une journée riche en protéines a un TEF nettement supérieur à une journée riche en lipides.`;
 
-  const w = latestWeight();
+  const w = Math.max(latestWeight(), 1);
   $("#pBmr").textContent = fmt(bmrMifflin(s.sexe, w, s.taille, s.age)) + " kcal/jour";
   $("#pProt").textContent = `${fmt(s.protMin * w)} – ${fmt(s.protMax * w)} g/jour`;
 
@@ -2363,7 +2578,7 @@ function openSessionSheet(existing) {
    EXPORT / IMPORT / RAPPORT
    ========================================================================== */
 function exportJSON() {
-  const blob = new Blob([JSON.stringify(DB, null, 2)], { type: "application/json" });
+  const blob = new Blob([JSON.stringify({ ...DB, version: 2, exportedAt: new Date().toISOString(), app: "health-tracker" }, null, 2)], { type: "application/json" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
   a.download = `health-tracker-${todayISO()}.json`;
@@ -2371,23 +2586,54 @@ function exportJSON() {
   setTimeout(() => URL.revokeObjectURL(a.href), 2000);
   toast("Export généré");
 }
+/* L'import ne touche jamais aux données existantes avant d'avoir validé le fichier,
+   puis demande confirmation : un remplacement complet ne doit pas être accidentel. */
 function importJSON(file) {
   const fr = new FileReader();
+  fr.onerror = () => toast("Fichier illisible");
   fr.onload = () => {
+    let candidate = null, summary = null;
     try {
       const data = JSON.parse(fr.result);
-      if (!data || typeof data !== "object" || !("settings" in data)) throw new Error("format");
-      DB = {
-        version: 2,
-        settings: { ...DEFAULT_SETTINGS, ...(data.settings || {}) },
-        foods: Array.isArray(data.foods) ? data.foods : [],
-        dishes: Array.isArray(data.dishes) ? data.dishes : [],
-        days: data.days && typeof data.days === "object" ? data.days : {},
-        weights: data.weights && typeof data.weights === "object" ? data.weights : {}
+      if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error("format");
+      if (!data.settings && !data.days && !data.foods) throw new Error("format");
+      candidate = sanitizeDB(data);
+      summary = {
+        days: Object.keys(candidate.days).length,
+        foods: candidate.foods.length,
+        dishes: candidate.dishes.length,
+        weights: Object.keys(candidate.weights).length
       };
-      persist(true); applyTheme(); render();
-      toast("Données importées");
-    } catch (e) { toast("Fichier invalide"); }
+      if (!summary.days && !summary.foods && !summary.dishes && !summary.weights) throw new Error("vide");
+    } catch (e) {
+      toast(e.message === "vide" ? "Ce fichier ne contient aucune donnée" : "Fichier invalide");
+      return;
+    }
+    const cur = {
+      days: Object.keys(DB.days).length, foods: DB.foods.length,
+      dishes: DB.dishes.length, weights: Object.keys(DB.weights).length
+    };
+    openSheet({
+      title: "Importer ces données ?",
+      body: `<p style="font-size:13.5px;color:var(--ink-2);margin:2px 0 12px">
+          L'import <b>remplace</b> le contenu actuel de l'application. Cette action est définitive.</p>
+        <div class="card tight" style="margin-bottom:10px">
+          ${kv("Journées", `${cur.days} → <b>${summary.days}</b>`)}
+          ${kv("Aliments", `${cur.foods} → <b>${summary.foods}</b>`)}
+          ${kv("Plats", `${cur.dishes} → <b>${summary.dishes}</b>`)}
+          ${kv("Pesées", `${cur.weights} → <b>${summary.weights}</b>`)}
+        </div>
+        <p class="hint">Les entrées illisibles du fichier ont été écartées automatiquement.</p>`,
+      footer: [
+        { label: "Annuler", cls: "ghost", onClick: closeSheet },
+        { label: "Remplacer", cls: "danger", onClick: () => {
+            DB = candidate;
+            persist(true); applyTheme(); applyTabSafe();
+            closeSheet(); UI.date = todayISO(); render();
+            toast("Données importées");
+          } }
+      ]
+    });
   };
   fr.readAsText(file);
 }
@@ -2396,6 +2642,7 @@ function importJSON(file) {
 function dayReport(date) {
   const c = computeDay(date);
   const s = DB.settings;
+  if (!c.hasData) return `Aucune donnée enregistrée pour le ${dayLabel(date)}.`;
   let t = `BILAN DU ${dayLabel(date).toUpperCase()}${c.provisional ? "\n⚠️ Bilan provisoire, activité du jour non confirmée." : ""}\n\n`;
   t += `REPAS\n`;
   MEAL_TYPES.forEach(mt => {
@@ -2424,14 +2671,14 @@ function dayReport(date) {
   t += `  Calories consommées : ${fmt(c.food.kcal)} kcal\n`;
   t += `  Protéines ${fmt(c.food.prot)} g · Glucides ${fmt(c.food.gluc)} g · Lipides ${fmt(c.food.lip)} g · Fibres ${fmt(c.food.fib)} g\n`;
   t += `  ${c.deficit >= 0 ? "Déficit" : "Surplus"} du jour : ${sign(c.deficit)} kcal\n`;
-  t += `  Équivalent théorique : ${(c.deficit >= 0 ? "−" : "+")}${fmt(Math.abs(c.deficit) / s.kcalPerKgFat * 1000)} g de graisse\n`;
+  t += `  Équivalent théorique : ${(c.deficit >= 0 ? "−" : "+")}${fmt(Math.abs(c.deficit) / kcalPerKgFat() * 1000)} g de graisse\n`;
   t += `  Objectif protéines : ${fmt(c.protTargetMin)}–${fmt(c.protTargetMax)} g ${c.food.prot >= c.protTargetMin ? "(atteint)" : "(non atteint)"}\n`;
   if (c.day.note) t += `\nCOMMENTAIRE\n  ${c.day.note}\n`;
   t += `\nEstimations théoriques. Le poids varie aussi avec l'eau, le glycogène, le sel et la digestion.`;
   return t;
 }
 function weekReport() {
-  const rows = computeRange(todayISO(), 7).filter(r => r.hasData);
+  const rows = computeRange(todayISO(), 7).filter(r => r.hasFood);
   if (!rows.length) return "Aucune donnée sur les 7 derniers jours.";
   const s = DB.settings, n = rows.length;
   const sum = k => rows.reduce((a, r) => a + k(r), 0);
@@ -2443,7 +2690,7 @@ function weekReport() {
   t += `  Dépense moyenne : ${fmt(sum(r => r.depense) / n)} kcal/jour\n`;
   t += `  ${totalDef >= 0 ? "Déficit" : "Surplus"} moyen : ${sign(totalDef / n)} kcal/jour\n`;
   t += `  ${totalDef >= 0 ? "Déficit" : "Surplus"} total : ${sign(totalDef)} kcal\n`;
-  t += `  Graisse théorique : ${(totalDef >= 0 ? "−" : "+")}${fmt1(Math.abs(totalDef) / s.kcalPerKgFat)} kg\n`;
+  t += `  Graisse théorique : ${(totalDef >= 0 ? "−" : "+")}${fmt1(Math.abs(totalDef) / kcalPerKgFat())} kg\n`;
   t += `  Protéines : ${fmt(sum(r => r.food.prot) / n)} g/jour · Glucides ${fmt(sum(r => r.food.gluc) / n)} g · Lipides ${fmt(sum(r => r.food.lip) / n)} g · Fibres ${fmt(sum(r => r.food.fib) / n)} g\n`;
   const sd = rows.filter(r => r.stepsUsed !== null);
   t += `  Pas moyens : ${sd.length ? fmt(sd.reduce((a, r) => a + r.stepsUsed, 0) / sd.length) : "non renseignés"}\n`;
@@ -2515,17 +2762,29 @@ function applyTabSafe() {
 function setSteps(v) {
   const day = getDay(UI.date, true);
   day.steps = v === "" ? null : clamp(num(v), 0, 200000);
+  /* sans pas renseignés, la journée ne peut plus être « confirmée » :
+     laisser les deux états coexister afficherait deux messages contradictoires */
+  if (day.steps === null) day.activityConfirmed = false;
   persist(); renderJour();
 }
 function setWeight(v) {
   if (v === "") { delete DB.weights[UI.date]; }
   else {
     const w = clamp(num(v), 20, 300);
-    if (w <= 0) return;
+    if (!Number.isFinite(w) || w <= 0) return;
     DB.weights[UI.date] = r1(w);
     if (UI.date >= todayISO()) DB.settings.poids = r1(w);
   }
   persist(); renderJour();
+}
+/* Le champ « Poids actuel » du profil doit peser sur les calculs : le moteur lit
+   la dernière pesée, on enregistre donc aussi une pesée du jour. */
+function setProfileWeight(v) {
+  const w = clamp(num(v, DB.settings.poids), 20, 300);
+  if (!Number.isFinite(w) || w <= 0) return;
+  DB.settings.poids = r1(w);
+  DB.weights[todayISO()] = r1(w);
+  persist();
 }
 
 /* ----------------------------------------------------------------------------
@@ -2613,7 +2872,8 @@ function wire() {
     const del = e.target.closest("[data-del]");
     if (del) {
       const day = getDay(UI.date, true);
-      const meal = getMeal(day, del.dataset.meal, true);
+      const meal = day.meals.find(m => m && m.type === del.dataset.meal);
+      if (!meal) return;
       meal.items = meal.items.filter(x => x.id !== del.dataset.del);
       persist(); renderJour(); toast("Supprimé");
       return;
@@ -2625,8 +2885,7 @@ function wire() {
       const it = meal.items.find(x => x.id === row.dataset.item);
       if (!it) return;
       if (it.kind === "dish") {
-        const src = it.dishId ? DB.dishes.find(d => d.id === it.dishId) : null;
-        openDishBuilder({ name: it.name, items: it.items, id: src ? src.id : null }, { dayItem: it });
+        openDishBuilder(null, { dayItem: it });
       } else {
         openQuantitySheet(it, it, () => { persist(); closeAllSheets(); renderJour(); });
       }
@@ -2709,12 +2968,16 @@ function wire() {
   /* — profil — */
   PROFIL_FIELDS.forEach(([sel, key, kind]) => {
     const el = $(sel);
-    const h = () => {
-      DB.settings[key] = kind === "num" ? num(el.value, DEFAULT_SETTINGS[key]) : el.value;
-      persist(); renderProfil();
-    };
-    el.addEventListener("change", h);
-    if (el.tagName === "INPUT") el.addEventListener("input", () => { DB.settings[key] = kind === "num" ? num(el.value, DEFAULT_SETTINGS[key]) : el.value; persist(); });
+    /* pendant la frappe on accepte la valeur telle quelle (sinon impossible de taper
+       « 7700 » si le minimum est 1000) ; à la validation on borne. */
+    const write = raw => { DB.settings[key] = kind === "num" ? num(raw, DEFAULT_SETTINGS[key]) : raw; };
+    el.addEventListener("change", () => {
+      if (key === "poids") { setProfileWeight(el.value); renderProfil(); return; }
+      write(el.value);
+      DB.settings = sanitizeSettings(DB.settings);
+      persist(); applyTabSafe(); renderProfil();
+    });
+    if (el.tagName === "INPUT") el.addEventListener("input", () => { write(el.value); persist(); });
   });
   $("#segTef").addEventListener("click", e => {
     const b = e.target.closest("[data-m]"); if (!b) return;
@@ -2758,14 +3021,21 @@ function wire() {
   let sx = 0, sy = 0, tracking = false;
   const vj = $("#view-jour");
   vj.addEventListener("touchstart", e => {
-    if (e.touches.length !== 1) return;
+    /* un geste à deux doigts, ou parti d'un champ de saisie, ne change pas de jour :
+       sinon la valeur en cours de frappe serait recopiée sur la journée voisine */
+    if (e.touches.length !== 1 || (e.target.closest && e.target.closest("input,textarea,select"))) {
+      tracking = false; return;
+    }
     sx = e.touches[0].clientX; sy = e.touches[0].clientY; tracking = true;
   }, { passive: true });
+  vj.addEventListener("touchcancel", () => { tracking = false; }, { passive: true });
   vj.addEventListener("touchend", e => {
     if (!tracking) return; tracking = false;
     const t = e.changedTouches[0];
     const dx = t.clientX - sx, dy = t.clientY - sy;
     if (Math.abs(dx) < 70 || Math.abs(dy) > 45) return;
+    if (SheetStack.length) return;
+    if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
     if (dx > 0) { UI.date = addDays(UI.date, -1); renderJour(); }
     else if (UI.date < todayISO()) { UI.date = addDays(UI.date, 1); renderJour(); }
   }, { passive: true });
@@ -2790,16 +3060,11 @@ function wire() {
    DÉMARRAGE
    ========================================================================== */
 (async function boot() {
-  const saved = await Store.load();
+  let saved = null;
+  try { saved = await Store.load(); }
+  catch (e) { saved = null; }          /* un stockage indisponible ne doit pas tuer l'app */
   if (saved && saved.settings) {
-    DB = {
-      version: 2,
-      settings: { ...DEFAULT_SETTINGS, ...saved.settings },
-      foods: Array.isArray(saved.foods) ? saved.foods : [],
-      dishes: Array.isArray(saved.dishes) ? saved.dishes : [],
-      days: saved.days || {},
-      weights: saved.weights || {}
-    };
+    DB = sanitizeDB(saved);
   } else {
     /* première ouverture : base d'aliments + repères de poids connus */
     seedFoods();
@@ -2812,7 +3077,15 @@ function wire() {
   fitViewport();
   lockViewport();
   wire();
-  render();
+  try { render(); }
+  catch (e) { console.error(e); toast("Certaines données étaient illisibles et ont été ignorées."); }
+
+  /* la sauvegarde différée est vidée dès que l'app passe en arrière-plan :
+     iOS peut la tuer sans préavis, 350 ms de retard suffiraient à perdre une saisie */
+  const flush = () => { if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; Store.save(DB); } };
+  window.addEventListener("pagehide", flush);
+  window.addEventListener("beforeunload", flush);
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") flush(); });
   window.addEventListener("resize", fitViewport);
   window.addEventListener("orientationchange", () => setTimeout(fitViewport, 150));
 
