@@ -241,6 +241,13 @@ nav.tabbar{
 .item .kc{flex:0 0 auto}
 .item .nm b{display:block;font-weight:540;font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .item .nm span{font-size:11.5px;color:var(--muted)}
+/* pastille de portion sur un plat partiellement consommé */
+.item .nm b .pct, .pct{
+  display:inline-block;margin-left:6px;padding:1px 6px;border-radius:99px;
+  font-size:10.5px;font-weight:660;letter-spacing:.01em;vertical-align:1px;
+  background:color-mix(in srgb, var(--s1) 16%, transparent);
+  color:var(--s1);border:1px solid color-mix(in srgb, var(--s1) 35%, transparent);
+}
 .item .kc{font-size:13px;font-weight:600;white-space:nowrap}
 .x{width:28px;height:28px;border-radius:8px;display:grid;place-items:center;color:var(--muted);flex:0 0 auto}
 .x svg{width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
@@ -682,7 +689,7 @@ table.data td.neg{color:var(--critical);font-weight:600}
 /* ============================================================================
    HEALTH TRACKER — noyau : stockage, modèle, moteur de calcul
    ========================================================================== */
-const APP_VERSION = "1.1.0";
+const APP_VERSION = "1.2.0";
 const KJ_PER_KCAL = 4.184;
 
 /* ---------- utilitaires ---------- */
@@ -863,6 +870,7 @@ function sanitizeDB(raw) {
       meals: (Array.isArray(d.meals) ? d.meals : []).filter(m => m && typeof m === "object").map(m => ({
         id: m.id || uid(), type: m.type,
         items: (Array.isArray(m.items) ? m.items : []).filter(it => it && typeof it === "object")
+          .map(it => (isDish(it) ? { ...it, portion: portionOf(it) } : it))
       })),
       steps: (() => {
         const v = num(d.steps, NaN);                 /* « beaucoup » n'est pas 0 pas */
@@ -946,10 +954,21 @@ function latestWeight() {
    - aliment : { id, kind:'food', foodId?, name, grams, kcal100, prot100, gluc100, lip100, fib100 }
    - plat    : { id, kind:'dish', dishId?, name, items:[aliment…] }                                */
 const ZERO_TOTALS = () => ({ kcal: 0, prot: 0, gluc: 0, lip: 0, fib: 0 });
+const isDish = it => !!it && typeof it === "object" && (it.kind === "dish" || (it.kind !== "food" && Array.isArray(it.items)));
+/* Part du plat réellement consommée : 1 = le plat entier, 0,5 = la moitié.
+   Absent sur les entrées créées avant cette version → 100 % par défaut. */
+function portionOf(it) {
+  if (!it || it.portion === undefined || it.portion === null || it.portion === "") return 1;
+  const p = num(it.portion, 1);
+  return Number.isFinite(p) && p > 0 ? clamp(p, 0.01, 10) : 1;
+}
 function itemTotals(it) {
   if (!it || typeof it !== "object") return ZERO_TOTALS();
   /* `kind` peut manquer sur des données importées : la présence d'items tranche */
-  if (it.kind === "dish" || (it.kind !== "food" && Array.isArray(it.items))) return sumTotals(it.items);
+  if (isDish(it)) {
+    const t = sumTotals(it.items), p = portionOf(it);
+    return { kcal: t.kcal * p, prot: t.prot * p, gluc: t.gluc * p, lip: t.lip * p, fib: t.fib * p };
+  }
   const f = num(it.grams) / 100;
   return {
     kcal: num(it.kcal100) * f,
@@ -970,10 +989,12 @@ function sumTotals(items) {
 function mealTotals(meal) { return sumTotals(meal && meal.items); }
 function itemGrams(it) {
   if (!it || typeof it !== "object") return 0;
-  if (it.kind === "dish" || (it.kind !== "food" && Array.isArray(it.items))) {
-    return (it.items || []).reduce((a, b) => a + num(b && b.grams), 0);
-  }
+  if (isDish(it)) return (it.items || []).reduce((a, b) => a + num(b && b.grams), 0) * portionOf(it);
   return num(it.grams);
+}
+/* poids de la recette entière, indépendamment de la portion consommée */
+function dishFullGrams(it) {
+  return (it && it.items || []).reduce((a, b) => a + num(b && b.grams), 0);
 }
 function dayFoodTotals(day) {
   const t = ZERO_TOTALS();
@@ -1321,11 +1342,16 @@ function renderJour() {
     const rows = (m.items || []).filter(it => it && typeof it === "object").map(it => {
       const x = itemTotals(it);
       const g = itemGrams(it);
-      const sub = it.kind === "dish"
+      const dish = isDish(it);
+      const p = dish ? portionOf(it) : 1;
+      const sub = dish
         ? `${(it.items || []).length} aliment${(it.items || []).length > 1 ? "s" : ""} · ${fmt(g)} g · P ${fmt(x.prot)} · G ${fmt(x.gluc)} · L ${fmt(x.lip)}`
         : `${fmt(g)} g · P ${fmt(x.prot)} · G ${fmt(x.gluc)} · L ${fmt(x.lip)}`;
+      /* les chiffres affichés sont déjà ceux de la portion consommée ;
+         la pastille rappelle qu'il ne s'agit pas du plat entier */
+      const badge = dish && p !== 1 ? `<span class="pct">${r0(p * 100)} %</span>` : "";
       return `<div class="item" data-item="${it.id}" data-meal="${mt.id}">
-        <div class="nm"><b>${it.kind === "dish" ? "🍲 " : ""}${esc(it.name)}</b><span>${sub}</span></div>
+        <div class="nm"><b>${dish ? "🍲 " : ""}${esc(it.name)}${badge}</b><span>${sub}</span></div>
         <div class="kc tnum">${fmt(x.kcal)} kcal</div>
         <button class="x" data-del="${it.id}" data-meal="${mt.id}" aria-label="Supprimer">${ICON.x}</button>
       </div>`;
@@ -1764,13 +1790,43 @@ function openDishBuilder(source, opts) {
   let saveToLibrary = !origin;      /* nouveau plat → proposé à l'enregistrement */
   let firstMount = true;
   let updateLibrary = false;        /* plat existant modifié → mise à jour */
+  /* part du plat effectivement mangée ; sans objet pour une fiche de bibliothèque,
+     qui décrit une recette et non un repas */
+  const usePortion = !opts.library;
+  let portion = dayItem ? portionOf(dayItem) : 1;
+
+  const PORTIONS = [0.25, 0.33, 0.5, 0.75, 1, 1.5, 2];
+  const pctOf = p => r0(p * 100);
+  const portionHTML = () => !usePortion ? "" : `
+    <div class="section-title" style="margin-top:14px">Portion consommée</div>
+    <div class="chips" id="dPortChips">
+      ${PORTIONS.map(p => `<button class="chip" data-p="${p}" aria-pressed="${Math.abs(p - portion) < 0.005}">${pctOf(p)} %</button>`).join("")}
+    </div>
+    <div class="field">
+      <label for="dPort">Autre valeur (%)</label>
+      <input type="number" id="dPort" inputmode="numeric" step="5" min="1" max="1000" value="${pctOf(portion)}">
+      <div class="hint">Part du plat que tu as réellement mangée. 100 % = le plat entier tel que composé ci-dessus.</div>
+    </div>`;
 
   const totalsCard = () => {
     const t = sumTotals(items);
     const g = items.reduce((a, b) => a + num(b.grams), 0);
-    return kv("Poids total", fmt(g) + " g") + kv("Calories", `<b>${fmt(t.kcal)} kcal</b>`) +
-      kv("Protéines", fmt1(t.prot) + " g") + kv("Glucides", fmt1(t.gluc) + " g") +
-      kv("Lipides", fmt1(t.lip) + " g") + kv("Fibres", fmt1(t.fib) + " g");
+    const p = usePortion ? portion : 1;
+    const partial = p !== 1;
+    /* quand une portion est définie, les valeurs consommées passent devant,
+       la recette entière reste rappelée en gris pour garder le repère */
+    const line = (k, consumed, full) => kv(k, partial
+      ? `${consumed} <small style="color:var(--muted);font-weight:450">/ ${full}</small>`
+      : consumed);
+    return (partial ? `<div class="row-between" style="margin-bottom:8px">
+        <b style="font-size:13px">Ta portion — ${pctOf(p)} %</b>
+        <span style="font-size:11px;color:var(--muted)">recette entière en gris</span></div>` : "") +
+      line("Poids", fmt(g * p) + " g", fmt(g) + " g") +
+      line("Calories", `<b>${fmt(t.kcal * p)} kcal</b>`, fmt(t.kcal)) +
+      line("Protéines", fmt1(t.prot * p) + " g", fmt1(t.prot)) +
+      line("Glucides", fmt1(t.gluc * p) + " g", fmt1(t.gluc)) +
+      line("Lipides", fmt1(t.lip * p) + " g", fmt1(t.lip)) +
+      line("Fibres", fmt1(t.fib * p) + " g", fmt1(t.fib));
   };
   const rows = () => items.length ? items.map(it => {
     const x = itemTotals(it);
@@ -1786,12 +1842,17 @@ function openDishBuilder(source, opts) {
       <input type="text" id="dName" value="${esc(name)}" placeholder="ex. Poulet riz brocoli" autocomplete="off"></div>
     <div class="section-title" style="margin-top:6px">Aliments</div>
     <div id="dRows">${rows()}</div>
-    <button class="btn block ghost" id="dAdd" style="margin:8px 0 14px">${ICON.plus} Ajouter un aliment</button>
-    <div class="card tight" id="dTot">${totalsCard()}</div>
+    <button class="btn block ghost" id="dAdd" style="margin:8px 0 6px">${ICON.plus} Ajouter un aliment</button>
+    <div id="dPortWrap">${portionHTML()}</div>
+    <div class="card tight" id="dTot" style="margin-top:8px">${totalsCard()}</div>
     <div id="dOpts"></div>`;
 
   function refresh() {
     $("#dRows").innerHTML = rows();
+    $("#dTot").innerHTML = totalsCard();
+  }
+  function refreshPortion() {
+    $$("#dPortChips button").forEach(b => b.setAttribute("aria-pressed", String(Math.abs(+b.dataset.p - portion) < 0.005)));
     $("#dTot").innerHTML = totalsCard();
   }
   const newDish = () => ({ id: uid(), name, items: cloneItems(items), createdAt: Date.now(), lastUsed: Date.now() });
@@ -1823,6 +1884,7 @@ function openDishBuilder(source, opts) {
     if (dayItem) {
       dayItem.name = name;
       dayItem.items = cloneItems(items);
+      dayItem.portion = portion;
       if (libDish && $("#dUpd") && $("#dUpd").checked) {
         libDish.name = name; libDish.items = cloneItems(items); libDish.lastUsed = Date.now();
       } else if (!libDish && $("#dSave") && $("#dSave").checked) {
@@ -1840,7 +1902,7 @@ function openDishBuilder(source, opts) {
       libDish.lastUsed = Date.now();
       if ($("#dUpd") && $("#dUpd").checked) { libDish.name = name; libDish.items = cloneItems(items); }
     }
-    addItemToMeal(opts.mealTypeId, { id: uid(), kind: "dish", dishId, name, items: cloneItems(items) });
+    addItemToMeal(opts.mealTypeId, { id: uid(), kind: "dish", dishId, name, portion, items: cloneItems(items) });
   }
 
   openSheet({
@@ -1858,6 +1920,18 @@ function openDishBuilder(source, opts) {
       const cbS = $("#dSave", root), cbU = $("#dUpd", root);
       if (cbS) cbS.onchange = e => { saveToLibrary = e.target.checked; };
       if (cbU) cbU.onchange = e => { updateLibrary = e.target.checked; };
+      const chips = $("#dPortChips", root), pin = $("#dPort", root);
+      if (chips) chips.onclick = e => {
+        const b = e.target.closest("[data-p]"); if (!b) return;
+        portion = +b.dataset.p;
+        if (pin) pin.value = pctOf(portion);
+        refreshPortion();
+      };
+      if (pin) pin.oninput = () => {
+        const v = num(pin.value, 100);
+        portion = Number.isFinite(v) && v > 0 ? clamp(v / 100, 0.01, 10) : 1;
+        refreshPortion();
+      };
       $("#dAdd", root).onclick = () => openFoodPicker(f => {
         openQuantitySheet(f, null, item => { items.push(item); closeSheet(); refresh(); persist(); });
       });
@@ -2652,9 +2726,14 @@ function dayReport(date) {
     t += `\n${mt.label} — ${fmt(tt.kcal)} kcal (P ${fmt(tt.prot)} / G ${fmt(tt.gluc)} / L ${fmt(tt.lip)} / F ${fmt(tt.fib)})\n`;
     m.items.forEach(it => {
       const x = itemTotals(it);
-      if (it.kind === "dish") {
-        t += `  • ${it.name} — ${fmt(x.kcal)} kcal\n`;
-        (it.items || []).forEach(s2 => { const y = itemTotals(s2); t += `      - ${s2.name} ${fmt(s2.grams)} g — ${fmt(y.kcal)} kcal\n`; });
+      if (isDish(it)) {
+        const p = portionOf(it);
+        t += `  • ${it.name}${p !== 1 ? ` — portion ${r0(p * 100)} %` : ""} — ${fmt(x.kcal)} kcal\n`;
+        (it.items || []).forEach(s2 => {
+          const y = itemTotals(s2);
+          t += `      - ${s2.name} ${fmt(num(s2.grams) * p)} g — ${fmt(y.kcal * p)} kcal\n`;
+        });
+        if (p !== 1) t += `      (recette entière : ${fmt(dishFullGrams(it))} g, ${fmt(sumTotals(it.items).kcal)} kcal)\n`;
       } else t += `  • ${it.name} ${fmt(it.grams)} g — ${fmt(x.kcal)} kcal (P ${fmt1(x.prot)} / G ${fmt1(x.gluc)} / L ${fmt1(x.lip)})\n`;
     });
   });
