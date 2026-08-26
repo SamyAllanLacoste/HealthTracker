@@ -69,7 +69,7 @@
   --shadow-lg:0 -6px 32px rgba(26,32,41,.16);
   --safe-b: env(safe-area-inset-bottom, 0px);
   --safe-t: env(safe-area-inset-top, 0px);
-  --tab-safe: .35;
+  --tab-safe: 1;
 }
 @media (prefers-color-scheme: dark){
   :root:not([data-theme="light"]){
@@ -116,7 +116,8 @@ html{
 }
 body{
   position:fixed; top:0; left:0; right:0; bottom:0;
-  height:var(--app-h, auto);
+  height:100vh;            /* repli */
+  height:100dvh;           /* suit la fenêtre visible réelle (iOS 16+) */
   display:flex; flex-direction:column; overflow:hidden;
   font-family:'Plus Jakarta Sans', system-ui, -apple-system, "Segoe UI", sans-serif;
   background:var(--page); color:var(--ink);
@@ -126,6 +127,8 @@ body{
   -webkit-tap-highlight-color:transparent; -webkit-touch-callout:none;
   -webkit-user-select:none; user-select:none;
 }
+/* navigateurs sans dvh : la hauteur mesurée en JS prend le relais */
+@supports not (height:100dvh){ body{ height:var(--app-h, 100vh) } }
 input,textarea,select,[contenteditable]{-webkit-user-select:text;user-select:text}
 button,input,select,textarea{font:inherit;color:inherit}
 button{cursor:pointer;background:none;border:none;padding:0}
@@ -166,12 +169,12 @@ nav.tabbar{
   flex:none;position:relative;z-index:50;
   background:var(--surface);
   border-top:1px solid var(--border);
-  padding:6px 8px max(4px, calc(var(--safe-b) * var(--tab-safe)));
+  padding:4px 8px max(6px, calc(var(--safe-b) * var(--tab-safe)));
 }
 .tabbar-inner{max-width:760px;margin:0 auto;display:grid;grid-template-columns:repeat(4,1fr);gap:4px}
 .tab{
-  display:flex;flex-direction:column;align-items:center;gap:3px;
-  padding:3px 4px 3px;color:var(--muted);
+  display:flex;flex-direction:column;align-items:center;gap:2px;
+  padding:2px 4px 2px;color:var(--muted);
   font-size:10.5px;font-weight:600;letter-spacing:-.01em;
 }
 .tab .ic{width:38px;height:26px;border-radius:var(--r-pill);display:grid;place-items:center;transition:background .15s}
@@ -661,9 +664,9 @@ table.data td.neg{color:var(--critical)}
       <div class="field">
         <label>Position de la barre d'onglets</label>
         <div class="seg" id="segTabSafe">
-          <button data-v="0.1" aria-pressed="false">Basse</button>
-          <button data-v="0.35" aria-pressed="true">Moyenne</button>
-          <button data-v="0.7" aria-pressed="false">Haute</button>
+          <button data-v="0.5" aria-pressed="false">Basse</button>
+          <button data-v="0.75" aria-pressed="false">Moyenne</button>
+          <button data-v="1" aria-pressed="true">Standard</button>
         </div>
         <div class="hint" id="tabSafeHint"></div>
       </div>
@@ -750,7 +753,7 @@ table.data td.neg{color:var(--critical)}
 /* ============================================================================
    HEALTH TRACKER — noyau : stockage, modèle, moteur de calcul
    ========================================================================== */
-const APP_VERSION = "1.3.0";
+const APP_VERSION = "1.4.0";
 const KJ_PER_KCAL = 4.184;
 
 /* ---------- utilitaires ---------- */
@@ -806,7 +809,7 @@ const DEFAULT_SETTINGS = {
   trainGoal: 5,
   metNet: true,
   theme: "auto",
-  tabSafe: 0.35        /* fraction de la zone sûre basse réservée sous les onglets */
+  tabSafe: 1           /* fraction de la zone sûre basse réservée sous les onglets */
 };
 
 /* bornes de validité appliquées aux réglages, à la validation d'un champ
@@ -819,6 +822,9 @@ const SETTINGS_RANGE = {
 };
 function sanitizeSettings(raw) {
   const out = { ...DEFAULT_SETTINGS, ...(raw && typeof raw === "object" ? raw : {}) };
+  /* migration v1.4 : l'ancien défaut 0,35 laissait les libellés mordre sur la
+     barre d'accueil ; on le relève à la pleine zone sûre (choix manuel préservé) */
+  if (Math.abs(num(out.tabSafe, 1) - 0.35) < 1e-9) out.tabSafe = 1;
   Object.keys(SETTINGS_RANGE).forEach(k => {
     const [lo, hi] = SETTINGS_RANGE[k];
     const v = num(out[k], DEFAULT_SETTINGS[k]);
@@ -3188,7 +3194,7 @@ function wire() {
   });
   $("#segTabSafe").addEventListener("click", e => {
     const b = e.target.closest("[data-v]"); if (!b) return;
-    DB.settings.tabSafe = num(b.dataset.v, 0.35);
+    DB.settings.tabSafe = num(b.dataset.v, 1);
     persist(); applyTabSafe(); renderProfil();
   });
   $("#segMet").addEventListener("click", e => {
