@@ -1,5 +1,5 @@
 /* Health Tracker — service worker : cache applicatif, fonctionnement hors ligne */
-const CACHE = "health-tracker-v1.5.0";
+const CACHE = "health-tracker-v1.6.0";
 const ASSETS = [
   "./",
   "./index.html",

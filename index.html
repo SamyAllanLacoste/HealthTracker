@@ -142,7 +142,9 @@ a{color:var(--green-dark)}
 #app{
   flex:1 1 auto; min-height:0; width:100%;
   max-width:760px; margin:0 auto;
-  padding:14px 16px 28px;
+  /* la barre d'onglets est fixée au bas du viewport (voir nav.tabbar) : le
+     défilement réserve sa hauteur + la zone sûre pour que rien ne passe dessous */
+  padding:14px 16px calc(72px + var(--safe-b));
   overflow-y:auto; overflow-x:hidden;
   overscroll-behavior:contain; -webkit-overflow-scrolling:touch;
 }
@@ -166,7 +168,9 @@ header.topbar{
    BARRE D'ONGLETS
    ============================================================ */
 nav.tabbar{
-  flex:none;position:relative;z-index:50;
+  position:fixed; left:0; right:0; bottom:0; z-index:50;
+  /* ancrée au bas du viewport visuel réel : iOS y place un élément fixe
+     correctement, sans dépendre de la hauteur exacte de la coque */
   background:var(--surface);
   border-top:1px solid var(--border);
   padding:4px 8px max(6px, calc(var(--safe-b) * var(--tab-safe)));
@@ -765,7 +769,7 @@ table.data td.neg{color:var(--critical)}
 /* ============================================================================
    HEALTH TRACKER — noyau : stockage, modèle, moteur de calcul
    ========================================================================== */
-const APP_VERSION = "1.5.0";
+const APP_VERSION = "1.6.0";
 const KJ_PER_KCAL = 4.184;
 
 /* ---------- utilitaires ---------- */
