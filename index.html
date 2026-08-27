@@ -339,6 +339,18 @@ nav.tabbar{
 .tile .bar{height:5px;border-radius:99px;background:var(--surface-3);overflow:hidden;margin-top:8px}
 .tile .bar i{display:block;height:100%;border-radius:99px;background:var(--blue)}
 
+/* carte TDEE réel (bilan énergétique) */
+.tdee{background:linear-gradient(180deg,var(--green-100),var(--surface) 62%);border:1px solid var(--green-200)}
+:root:not([data-theme="light"]) .tdee,
+:root[data-theme="dark"] .tdee{background:linear-gradient(180deg,var(--green-100),var(--surface) 62%);border-color:var(--border)}
+.tdee-big{display:flex;align-items:baseline;gap:8px;margin:2px 0 4px}
+.tdee-big b{font-size:38px;font-weight:800;letter-spacing:-.045em;line-height:1;font-variant-numeric:tabular-nums}
+.tdee-big small{font-size:14px;font-weight:600;color:var(--ink-2)}
+.tdee-cmp{font-size:13px;font-weight:600;margin-bottom:12px}
+.tdee-cmp.pos{color:var(--green-dark)}
+.tdee-cmp.neg{color:var(--critical)}
+.tdee-cmp.eq{color:var(--ink-2)}
+
 /* ============================================================
    FORMULAIRES
    ============================================================ */
@@ -753,7 +765,7 @@ table.data td.neg{color:var(--critical)}
 /* ============================================================================
    HEALTH TRACKER — noyau : stockage, modèle, moteur de calcul
    ========================================================================== */
-const APP_VERSION = "1.4.0";
+const APP_VERSION = "1.5.0";
 const KJ_PER_KCAL = 4.184;
 
 /* ---------- utilitaires ---------- */
@@ -1142,6 +1154,79 @@ function computeRange(endDate, days) {
   const out = [];
   for (let i = days - 1; i >= 0; i--) out.push(computeDay(addDays(endDate, -i)));
   return out;
+}
+
+/* ---------- TDEE réel (méthode du bilan énergétique) ----------
+   Régression linéaire des pesées sur une fenêtre glissante : la pente (kg/jour)
+   donne le déséquilibre énergétique quotidien. En partant de la formule
+     TDEE = conso moyenne + (perte_kg × 7700) / jours
+   et en remplaçant la perte par pente × jours, les « jours » se simplifient :
+     TDEE = conso moyenne − pente(kg/jour) × 7700
+   La régression absorbe les variations quotidiennes d'eau et de glycogène,
+   bien plus fiable que l'écart entre deux pesées isolées. */
+function linReg(pts) {
+  const n = pts.length;
+  if (n < 2) return null;
+  let sx = 0, sy = 0, sxx = 0, sxy = 0;
+  for (const p of pts) { sx += p.x; sy += p.y; sxx += p.x * p.x; sxy += p.x * p.y; }
+  const den = n * sxx - sx * sx;
+  if (Math.abs(den) < 1e-9) return null;
+  const slope = (n * sxy - sx * sy) / den;
+  const intercept = (sy - slope * sx) / n;
+  const my = sy / n;
+  let ssTot = 0, ssRes = 0;
+  for (const p of pts) { const f = slope * p.x + intercept; ssRes += (p.y - f) ** 2; ssTot += (p.y - my) ** 2; }
+  const r2 = ssTot > 1e-12 ? clamp(1 - ssRes / ssTot, 0, 1) : (ssRes < 1e-12 ? 1 : 0);
+  return { slope, intercept, r2 };
+}
+
+const TDEE_MIN_WEIGHINS = 4;   /* pesées minimales dans la fenêtre */
+const TDEE_MIN_SPAN = 7;       /* jours minimaux entre 1re et dernière pesée */
+const TDEE_MIN_FOODDAYS = 4;   /* jours de repas renseignés minimaux */
+
+function adaptiveTDEE(refISO, windowDays) {
+  refISO = refISO || todayISO();
+  windowDays = windowDays || 14;
+  const startISO = addDays(refISO, -(windowDays - 1));
+  const wKeys = Object.keys(DB.weights)
+    .filter(k => k >= startISO && k <= refISO && Number.isFinite(+DB.weights[k]))
+    .sort();
+  const base = { ok: false, windowDays, nWeights: wKeys.length };
+  if (wKeys.length < TDEE_MIN_WEIGHINS) return { ...base, reason: "weights" };
+
+  const DAY = 86400000;
+  const t0 = parseISO(wKeys[0]).getTime();
+  const pts = wKeys.map(k => ({ x: (parseISO(k).getTime() - t0) / DAY, y: +DB.weights[k] }));
+  const spanDays = pts[pts.length - 1].x - pts[0].x;
+  if (spanDays < TDEE_MIN_SPAN) return { ...base, reason: "span", spanDays };
+
+  const reg = linReg(pts);
+  if (!reg) return { ...base, reason: "reg" };
+
+  /* conso ET dépense théorique moyennes sur le même intervalle [1re..dernière pesée],
+     jours renseignés uniquement (jour en cours exclu tant que l'activité n'est pas confirmée) */
+  const first = wKeys[0], last = wKeys[wKeys.length - 1], today = todayISO();
+  let cSum = 0, dSum = 0, cN = 0;
+  for (let d = first; d <= last; d = addDays(d, 1)) {
+    const day = DB.days[d];
+    if (!day) continue;
+    if (d === today && !day.activityConfirmed) continue;
+    const c = computeDay(d);
+    if (c.hasFood) { cSum += c.food.kcal; dSum += c.depense; cN++; }
+  }
+  if (cN < TDEE_MIN_FOODDAYS) return { ...base, reason: "food", foodDays: cN, spanDays };
+
+  const avgConsumed = cSum / cN;
+  const avgDepense = dSum / cN;
+  const slope = reg.slope;                 /* kg/jour, négatif = perte */
+  const tdee = avgConsumed - slope * 7700; /* pente négative → TDEE au-dessus de la conso */
+  return {
+    ok: true, windowDays, tdee, avgConsumed, avgDepense,
+    slope, slopePerWeek: slope * 7, weightChange: slope * spanDays,
+    r2: reg.r2, spanDays: Math.round(spanDays), nWeights: wKeys.length,
+    foodDays: cN, first, last,
+    gapVsTheory: tdee - avgDepense
+  };
 }
 
 /* ============================================================================
@@ -2506,6 +2591,8 @@ function renderAnalyse() {
         ${tile(totalDef >= 0 ? "Déficit total" : "Surplus total", sign(totalDef), `≈ ${(fatKg >= 0 ? "−" : "+") + fmt1(Math.abs(fatKg))} kg de graisse`, fatKg >= 0 ? "pos" : "neg")}
     </div>
 
+    ${tdeeCardHTML()}
+
     <div class="card">
       <div class="card-head"><h3>Calories consommées vs dépense estimée</h3></div>
       <div class="chart-wrap" id="ch1"></div>
@@ -2598,6 +2685,56 @@ function renderAnalyse() {
   chartCumul($("#ch3"), rows);
   if (!chartPoids($("#ch4"), rows)) $("#lg4").style.display = "none";
   chartMacros($("#ch5"), { prot: avgProt, gluc: avgGluc, lip: avgLip });
+}
+
+/* Carte « TDEE réel » — dépense totale déduite du bilan énergétique réel
+   (pesées + calories consommées), et non plus estimée par formule. */
+function tdeeCardHTML() {
+  const t = adaptiveTDEE(todayISO(), 14);
+  if (!t.ok) {
+    const need = {
+      weights: `Il faut au moins ${TDEE_MIN_WEIGHINS} pesées sur les 14 derniers jours (actuellement ${t.nWeights}).`,
+      span:    `Les pesées doivent couvrir au moins ${TDEE_MIN_SPAN} jours d'écart (actuellement ${t.spanDays}).`,
+      food:    `Il faut au moins ${TDEE_MIN_FOODDAYS} jours de repas renseignés sur l'intervalle des pesées (actuellement ${t.foodDays}).`,
+      reg:     `Les pesées ne permettent pas encore de tendance fiable.`
+    }[t.reason] || "Données insuffisantes pour l'instant.";
+    return `
+      <div class="card tdee">
+        <div class="card-head"><h3>TDEE réel · mesuré</h3><span class="spacer"></span>
+          <span class="sub">14 j glissants</span></div>
+        <div class="empty" style="padding:14px 4px">${need}<br>
+          <span style="font-size:12px">Pèse-toi chaque matin et renseigne tes repas : le calcul s'active tout seul.</span></div>
+      </div>`;
+  }
+
+  const gap = t.gapVsTheory;                 /* TDEE mesuré − dépense théorique */
+  const cmpCls = Math.abs(gap) < 60 ? "eq" : gap > 0 ? "pos" : "neg";
+  const cmpTxt = Math.abs(gap) < 60
+    ? "conforme à ta dépense théorique estimée"
+    : `${sign(gap)} kcal ${gap > 0 ? "au-dessus de" : "sous"} ta dépense théorique (${fmt(t.avgDepense)} kcal)`;
+  const trend = t.slopePerWeek;              /* kg/semaine, négatif = perte */
+  const trendTxt = Math.abs(trend) < 0.03
+    ? "poids stable"
+    : `${(trend < 0 ? "−" : "+") + fmt1(Math.abs(trend))} kg/semaine`;
+  /* confiance : qualité de l'ajustement + nombre de pesées */
+  const conf = t.r2 >= 0.5 && t.nWeights >= 8 ? "élevée"
+             : t.r2 >= 0.25 || t.nWeights >= 6 ? "correcte" : "indicative";
+
+  return `
+    <div class="card tdee">
+      <div class="card-head"><h3>TDEE réel · mesuré</h3><span class="spacer"></span>
+        <span class="sub">14 j glissants</span></div>
+      <div class="tdee-big"><b>${fmt(t.tdee)}</b><small>kcal / jour</small></div>
+      <div class="tdee-cmp ${cmpCls}">${cmpTxt}</div>
+      <div class="kv"><span class="k">Calories consommées (moyenne)</span><span class="v tnum">${fmt(t.avgConsumed)} kcal</span></div>
+      <div class="kv"><span class="k">Tendance de poids</span><span class="v tnum">${trendTxt}</span></div>
+      <div class="kv"><span class="k">Base de calcul</span><span class="v tnum">${t.nWeights} pesées · ${t.spanDays} j · ${t.foodDays} j de repas</span></div>
+      <div class="hint" style="margin-top:10px">
+        Déduit du bilan énergétique réel : consommation moyenne (${fmt(t.avgConsumed)} kcal) ajustée de
+        ${sign(-t.slope * 7700)} kcal/jour correspondant à ta variation de poids mesurée.
+        Fiabilité ${conf} (ajustement R² = ${fmt1(t.r2 * 100)} %). Plus tu accumules de pesées, plus le chiffre se précise.
+      </div>
+    </div>`;
 }
 
 function tableHTML(rows) {
