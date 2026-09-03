@@ -525,6 +525,32 @@ table.data td.neg{color:var(--critical)}
 .toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
 @media (min-width:620px){ .tiles{grid-template-columns:repeat(4,1fr)} }
 @media print{ nav.tabbar,header.topbar,.icon-btn{display:none} }
+
+/* ============================================================
+   ASSISTANT CLAUDE — bouton d'accès et chat d'estimation
+   ============================================================ */
+.ai-cta{background:var(--green-100);color:var(--green-dark)}
+.ai-cta svg{stroke:currentColor}
+.ai-wrap{display:flex;flex-direction:column;height:100%;min-height:0}
+.ai-log{flex:1 1 0;min-height:0;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;padding:2px 0 10px}
+.ai-input-row{flex:none;display:flex;gap:8px;align-items:flex-end;padding-top:9px;border-top:1px solid var(--border)}
+.ai-input-row textarea{flex:1 1 auto;min-height:46px;max-height:120px;margin:0;padding:12px 14px;line-height:1.35}
+.ai-send{flex:none;width:48px;height:46px;padding:0;border-radius:14px}
+.ai-send svg{width:18px;height:18px}
+.ai-row{display:flex;margin-bottom:10px}
+.ai-row.ai-user{justify-content:flex-end}
+.ai-bubble{max-width:84%;padding:10px 13px;border-radius:16px;font-size:14px;line-height:1.45;word-break:break-word}
+.ai-user .ai-bubble{background:var(--green);color:#fff;border-bottom-right-radius:5px}
+.ai-claude .ai-bubble{background:var(--surface);color:var(--ink);box-shadow:var(--shadow);border-bottom-left-radius:5px}
+.ai-error .ai-bubble{background:var(--orange-100);color:var(--ink);border-bottom-left-radius:5px}
+.ai-cards{margin:0 0 10px}
+.ai-card.done{opacity:.6}
+.ai-notice{background:var(--surface-2);border:1px solid var(--border);border-radius:16px;padding:14px;font-size:13px;color:var(--ink-2);line-height:1.5}
+.ai-typing{display:inline-flex;gap:5px;align-items:center;padding:13px}
+.ai-typing span{width:6px;height:6px;border-radius:50%;background:var(--muted);animation:aiBlink 1.15s infinite ease-in-out}
+.ai-typing span:nth-child(2){animation-delay:.18s}
+.ai-typing span:nth-child(3){animation-delay:.36s}
+@keyframes aiBlink{0%,65%,100%{opacity:.25}30%{opacity:1}}
 </style>
 </head>
 <body>
@@ -703,6 +729,23 @@ table.data td.neg{color:var(--critical)}
     </div>
 
     <div class="card">
+      <div class="card-head"><h3>Assistant Claude</h3></div>
+      <p style="font-size:12.5px;line-height:1.55;color:var(--ink-2);margin:0 0 12px">
+        Depuis l'écran « Ajouter » d'un repas, décris ce que tu as mangé en langage naturel&nbsp;: Claude estime les calories et les macros, que tu ajoutes en un tap. L'appel se fait directement depuis cet appareil avec ta clé API Anthropic personnelle — elle reste stockée localement et n'est jamais incluse dans l'export.
+      </p>
+      <div class="field">
+        <label for="pAiKey">Clé API Anthropic</label>
+        <input type="password" id="pAiKey" placeholder="sk-ant-…" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+        <div class="hint">Crée une clé sur console.anthropic.com (rubrique API Keys). Chaque estimation consomme des jetons facturés sur ton compte Anthropic.</div>
+      </div>
+      <div class="field" style="margin-bottom:0">
+        <label for="pAiModel">Modèle</label>
+        <select id="pAiModel"></select>
+        <div class="hint" id="pAiStatus"></div>
+      </div>
+    </div>
+
+    <div class="card">
       <div class="card-head"><h3>Données</h3></div>
       <div class="btn-row" style="margin-bottom:8px">
         <button class="btn" id="btnExport"><svg viewBox="0 0 24 24"><path d="M12 3v13m0 0 4-4m-4 4-4-4M4 21h16"/></svg> Exporter</button>
@@ -769,7 +812,7 @@ table.data td.neg{color:var(--critical)}
 /* ============================================================================
    HEALTH TRACKER — noyau : stockage, modèle, moteur de calcul
    ========================================================================== */
-const APP_VERSION = "1.7.0";
+const APP_VERSION = "1.8.0";
 const KJ_PER_KCAL = 4.184;
 
 /* ---------- utilitaires ---------- */
@@ -825,6 +868,7 @@ const DEFAULT_SETTINGS = {
   trainGoal: 5,
   metNet: true,
   theme: "auto",
+  aiModel: "claude-sonnet-5",   /* modèle Claude pour l'estimation des repas */
   tabSafe: 1           /* fraction de la zone sûre basse réservée sous les onglets */
 };
 
@@ -849,6 +893,7 @@ function sanitizeSettings(raw) {
   if (out.sexe !== "femme") out.sexe = "homme";
   if (out.tefMethod !== "percent") out.tefMethod = "macros";
   if (!["auto", "light", "dark"].includes(out.theme)) out.theme = "auto";
+  if (!["claude-sonnet-5", "claude-opus-4-8", "claude-haiku-4-5"].includes(out.aiModel)) out.aiModel = "claude-sonnet-5";
   out.metNet = out.metNet !== false;
   if (out.protMax < out.protMin) out.protMax = out.protMin;
   return out;
@@ -1412,6 +1457,234 @@ function confirmSheet(title, message, onYes, yesLabel) {
     ]
   });
 }
+
+/* ============================================================================
+   ASSISTANT CLAUDE — estimation des macros d'un repas décrit librement
+   Appel direct à l'API Anthropic depuis le navigateur, avec la clé API
+   personnelle de l'utilisateur (stockée sur l'appareil, hors export).
+   ========================================================================== */
+const AI_MODELS = [
+  { id: "claude-sonnet-5",  label: "Sonnet 5 — équilibré" },
+  { id: "claude-opus-4-8",  label: "Opus 4.8 — le plus fin" },
+  { id: "claude-haiku-4-5", label: "Haiku 4.5 — rapide et économique" }
+];
+const AI_KEY_STORE = "ht-ai-key";
+const aiKey = () => { try { return localStorage.getItem(AI_KEY_STORE) || ""; } catch (e) { return ""; } };
+function setAiKey(v) { try { v ? localStorage.setItem(AI_KEY_STORE, v) : localStorage.removeItem(AI_KEY_STORE); } catch (e) {} }
+const aiModel = () => (AI_MODELS.some(m => m.id === DB.settings.aiModel) ? DB.settings.aiModel : "claude-sonnet-5");
+const aiKeyStatus = () => aiKey() ? "Clé enregistrée sur cet appareil." : "Aucune clé enregistrée — l'assistant est désactivé.";
+
+const AI_SYSTEM =
+  "Tu es un assistant nutritionniste intégré à une application de suivi alimentaire. " +
+  "L'utilisateur décrit librement, en français, ce qu'il a mangé ou bu. Ton rôle est d'estimer les macronutriments. " +
+  "Raisonne sur des portions réalistes (une assiette, un bol, une part, une cuillère…). " +
+  "Ne pose une question que si une information indispensable manque vraiment (quantité totalement ambiguë, cuisson déterminante) — au maximum une question courte. " +
+  "Sinon, propose directement une estimation raisonnable sans multiplier les questions. " +
+  "Dès que tu peux estimer, appelle l'outil enregistrer_aliments avec un élément par aliment distinct du repas. " +
+  "Pour chaque élément, donne des valeurs TOTALES pour la portion consommée (et non pour 100 g) : calories, protéines, glucides, lipides, fibres, ainsi que le poids en grammes de la portion. " +
+  "Après l'appel de l'outil, ajoute une phrase brève rappelant qu'il s'agit d'estimations. Reste concis et bienveillant.";
+
+const AI_TOOL = {
+  name: "enregistrer_aliments",
+  description: "Propose à l'utilisateur les aliments estimés du repas, pour ajout dans sa journée.",
+  input_schema: {
+    type: "object",
+    properties: {
+      aliments: {
+        type: "array",
+        description: "Un objet par aliment distinct du repas.",
+        items: {
+          type: "object",
+          properties: {
+            nom:       { type: "string", description: "Nom court de l'aliment, en français." },
+            grammes:   { type: "number", description: "Poids de la portion consommée, en grammes." },
+            kcal:      { type: "number", description: "Calories totales de la portion (kcal)." },
+            proteines: { type: "number", description: "Protéines totales de la portion (g)." },
+            glucides:  { type: "number", description: "Glucides totaux de la portion (g)." },
+            lipides:   { type: "number", description: "Lipides totaux de la portion (g)." },
+            fibres:    { type: "number", description: "Fibres totales de la portion (g)." }
+          },
+          required: ["nom", "grammes", "kcal", "proteines", "glucides", "lipides", "fibres"]
+        }
+      }
+    },
+    required: ["aliments"]
+  }
+};
+
+async function aiComplete(messages) {
+  if (!aiKey()) throw { kind: "nokey" };
+  let res;
+  try {
+    res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": aiKey(),
+        "anthropic-version": "2023-06-01",
+        "anthropic-dangerous-direct-browser-access": "true"
+      },
+      body: JSON.stringify({ model: aiModel(), max_tokens: 1500, system: AI_SYSTEM, tools: [AI_TOOL], messages })
+    });
+  } catch (e) { throw { kind: "network" }; }
+  if (!res.ok) {
+    let message = "";
+    try { const j = await res.json(); message = (j && j.error && j.error.message) || ""; } catch (e) {}
+    throw { kind: "http", status: res.status, message };
+  }
+  return res.json();
+}
+
+function openAIChat(mealTypeId) {
+  const mt = MEAL_TYPES.find(m => m.id === mealTypeId) || { label: "" };
+  const transcript = [];   /* affichage : {who:"user"|"claude"|"error", text} ou {who:"cards", ids} */
+  const msgs = [];         /* historique au format API Anthropic */
+  const foodStore = {};    /* storeId -> { food, grams } */
+  const added = new Set();
+  let busy = false, firstMount = true;
+
+  function registerFood(a) {
+    const g0 = num(a && a.grammes), g = g0 > 0 ? g0 : 100;
+    const per = v => num(v) / g * 100;
+    const id = uid();
+    foodStore[id] = {
+      grams: r1(g),
+      food: {
+        name: String((a && a.nom) || "Aliment"),
+        kcal100: r1(per(a && a.kcal)), prot100: r1(per(a && a.proteines)),
+        gluc100: r1(per(a && a.glucides)), lip100: r1(per(a && a.lipides)), fib100: r1(per(a && a.fibres))
+      }
+    };
+    return id;
+  }
+  function addStored(storeId) {
+    const rec = foodStore[storeId]; if (!rec || added.has(storeId)) return;
+    const f = rec.food;
+    getMeal(getDay(UI.date, true), mealTypeId, true).items.push({
+      id: uid(), kind: "food", foodId: null, grams: r1(rec.grams),
+      name: f.name, kcal100: f.kcal100, prot100: f.prot100, gluc100: f.gluc100, lip100: f.lip100, fib100: f.fib100
+    });
+    added.add(storeId); persist();
+  }
+
+  function cardHTML(storeId) {
+    const rec = foodStore[storeId]; if (!rec) return "";
+    const f = rec.food, g = rec.grams, t = itemTotals({ ...f, grams: g }), done = added.has(storeId);
+    return `<button class="res ai-card${done ? " done" : ""}" data-aifood="${storeId}"${done ? " disabled" : ""}>
+        <div class="nm"><b>${esc(f.name)}</b><span>${fmtg(g)} g · ${fmt(t.kcal)} kcal · P ${fmt1(t.prot)} · G ${fmt1(t.gluc)} · L ${fmt1(t.lip)}</span></div>
+        <span class="go">${done ? ICON.check : ICON.plus}</span></button>`;
+  }
+  function entryHTML(e) {
+    if (e.who === "cards") {
+      const cards = e.ids.map(cardHTML).join("");
+      const remaining = e.ids.filter(id => !added.has(id)).length;
+      const bulk = (e.ids.length > 1 && remaining > 0)
+        ? `<button class="btn block ai-cta" data-aibulk="${esc(e.ids.join(","))}" style="margin:2px 0 6px">${ICON.plus} Tout ajouter (${remaining})</button>` : "";
+      return `<div class="ai-cards">${cards}${bulk}</div>`;
+    }
+    const cls = e.who === "user" ? "ai-user" : e.who === "error" ? "ai-error" : "ai-claude";
+    return `<div class="ai-row ${cls}"><div class="ai-bubble">${esc(e.text).replace(/\n/g, "<br>")}</div></div>`;
+  }
+  function welcomeHTML() {
+    if (!aiKey()) return `<div class="ai-notice">Pour utiliser l'assistant, ajoute ta clé API Anthropic dans <b>Profil → Assistant Claude</b>. Elle reste sur cet appareil et sert à appeler Claude directement.
+        <button class="btn block" id="aiGoSettings" style="margin-top:10px">Ouvrir les réglages</button></div>`;
+    return `<div class="ai-row ai-claude"><div class="ai-bubble">Décris ce que tu as mangé ou bu, j'estime les calories et les macros. Par exemple : « un bol de pâtes bolognaise et une pomme ».</div></div>`;
+  }
+  function paint() {
+    const log = $("#aiLog"); if (!log) return;
+    let html = transcript.map(entryHTML).join("");
+    if (busy) html += `<div class="ai-row ai-claude"><div class="ai-bubble ai-typing"><span></span><span></span><span></span></div></div>`;
+    log.innerHTML = html || welcomeHTML();
+    log.scrollTop = log.scrollHeight;
+  }
+  function fail(err) {
+    let text;
+    if (err && err.kind === "nokey") text = "Ajoute d'abord ta clé API dans Profil → Assistant Claude.";
+    else if (err && err.kind === "network") text = "Connexion impossible. Vérifie ta connexion internet, puis réessaie.";
+    else if (err && err.kind === "http" && err.status === 401) text = "Clé API refusée (401). Vérifie-la dans Profil → Assistant Claude.";
+    else if (err && err.kind === "http" && err.status === 429) text = "Limite de requêtes atteinte (429). Réessaie dans un moment.";
+    else if (err && err.kind === "http") text = `Erreur ${err.status}${err.message ? " — " + err.message : "."}`;
+    else text = "Une erreur est survenue. Réessaie.";
+    transcript.push({ who: "error", text });
+  }
+  async function send(text) {
+    if (busy) return;
+    text = (text || "").trim(); if (!text) return;
+    transcript.push({ who: "user", text });
+    msgs.push({ role: "user", content: text });
+    busy = true; paint();
+    try {
+      const data = await aiComplete(msgs);
+      msgs.push({ role: "assistant", content: data.content || [] });
+      const toolUses = [];
+      (data.content || []).forEach(b => {
+        if (b.type === "text" && b.text && b.text.trim()) transcript.push({ who: "claude", text: b.text.trim() });
+        else if (b.type === "tool_use" && b.name === AI_TOOL.name) toolUses.push(b);
+      });
+      if (toolUses.length) {
+        const ids = [];
+        toolUses.forEach(tu => ((tu.input && tu.input.aliments) || []).forEach(a => ids.push(registerFood(a))));
+        if (ids.length) transcript.push({ who: "cards", ids });
+        msgs.push({ role: "user", content: toolUses.map(tu => ({
+          type: "tool_result", tool_use_id: tu.id,
+          content: "Aliments affichés à l'utilisateur pour vérification et ajout à sa journée. En attente d'éventuels ajustements."
+        })) });
+      } else if (!(data.content || []).some(b => b.type === "text" && b.text && b.text.trim())) {
+        transcript.push({ who: "claude", text: "(réponse vide)" });
+      }
+    } catch (err) { fail(err); }
+    finally { busy = false; paint(); }
+  }
+
+  openSheet({
+    title: "Estimer avec Claude" + (mt.label ? " — " + mt.label : ""),
+    tall: true,
+    body: () => `<div class="ai-wrap">
+        <div class="ai-log" id="aiLog"></div>
+        <div class="ai-input-row">
+          <textarea id="aiInput" rows="1" placeholder="Ex. un bol de pâtes bolognaise et une pomme" enterkeyhint="send" autocomplete="off"></textarea>
+          <button class="btn primary ai-send" id="aiSend" aria-label="Envoyer"><svg viewBox="0 0 24 24"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4Z"/></svg></button>
+        </div>
+      </div>`,
+    onMount(root) {
+      const log = $("#aiLog", root), input = $("#aiInput", root), sendBtn = $("#aiSend", root);
+      const enabled = !!aiKey();
+      input.disabled = !enabled; sendBtn.disabled = !enabled;
+      const grow = () => { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 120) + "px"; };
+      const submit = () => { const v = input.value; input.value = ""; grow(); send(v); };
+      input.addEventListener("input", grow);
+      input.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); } });
+      sendBtn.onclick = submit;
+      log.addEventListener("click", e => {
+        if (e.target.closest("#aiGoSettings")) { closeAllSheets(); setView("profil"); return; }
+        const bulk = e.target.closest("[data-aibulk]");
+        if (bulk) {
+          const ids = bulk.dataset.aibulk.split(","); let n = 0;
+          ids.forEach(id => { if (!added.has(id)) { addStored(id); n++; } });
+          renderJour(); paint(); if (n) toast(`${n} aliment${n > 1 ? "s" : ""} ajouté${n > 1 ? "s" : ""}`);
+          return;
+        }
+        const card = e.target.closest("[data-aifood]");
+        if (card && !card.disabled) {
+          const storeId = card.dataset.aifood, rec = foodStore[storeId];
+          if (!rec || added.has(storeId)) return;
+          const f = rec.food;
+          openQuantitySheet(
+            { name: f.name, kcal100: f.kcal100, prot100: f.prot100, gluc100: f.gluc100, lip100: f.lip100, fib100: f.fib100 },
+            null,
+            item => {
+              getMeal(getDay(UI.date, true), mealTypeId, true).items.push(item);
+              added.add(storeId); persist(); renderJour(); closeSheet(); toast("Ajouté au repas");
+            },
+            rec.grams
+          );
+        }
+      });
+      paint();
+      if (firstMount && enabled) { firstMount = false; setTimeout(() => { try { input.focus(); } catch (e) {} }, 160); }
+    }
+  });
+}
 </script>
 <script>
 "use strict";
@@ -1662,6 +1935,7 @@ function openAddPicker(mealTypeId) {
     </div>
     <div class="field"><input type="search" id="pkQ" placeholder="Rechercher…" value="${esc(q)}" autocomplete="off" enterkeyhint="search"></div>`;
   const body = () => `
+    <button class="btn block ai-cta" id="pkAI" style="margin-bottom:12px">${ICON.spark} Estimer avec Claude</button>
     <div class="res-count" id="pkCount">${countLabel()}</div>
     <div id="pkList">${listHTML()}</div>`;
 
@@ -1685,6 +1959,7 @@ function openAddPicker(mealTypeId) {
       /* le sous-en-tête est hors de `root` : on le cible globalement */
       $("#pkSeg").onclick = e => { const b = e.target.closest("button[data-t]"); if (!b) return; tab = b.dataset.t; refresh(); };
       $("#pkQ").oninput = e => { q = e.target.value.trim().toLowerCase(); refresh(); };
+      const aiCta = $("#pkAI", root); if (aiCta) aiCta.onclick = () => openAIChat(mealTypeId);
       /* écouteur porté par la liste elle-même, recréée à chaque rendu */
       $("#pkList", root).onclick = e => {
         const fb = e.target.closest("[data-food]");
@@ -1709,7 +1984,7 @@ function addItemToMeal(mealTypeId, item) {
 }
 
 /* ---------- quantité d'un aliment (+ accès direct à ses macros) ---------- */
-function openQuantitySheet(food, existingItem, onConfirm) {
+function openQuantitySheet(food, existingItem, onConfirm, initialGrams) {
   /* `base` est TOUJOURS une copie de travail : tant que l'utilisateur n'a pas
      validé, rien n'est écrit dans la journée ni dans le plat en cours. */
   const src = existingItem || food || {};
@@ -1719,7 +1994,7 @@ function openQuantitySheet(food, existingItem, onConfirm) {
     kcal100: num(src.kcal100), prot100: num(src.prot100), gluc100: num(src.gluc100),
     lip100: num(src.lip100), fib100: num(src.fib100)
   };
-  let grams = existingItem ? num(existingItem.grams) : 100;
+  let grams = existingItem ? num(existingItem.grams) : (initialGrams != null && initialGrams !== "" ? num(initialGrams) : 100);
 
   const html = () => `
     <div class="card tight" style="margin-bottom:10px">
@@ -2859,6 +3134,17 @@ function renderProfil() {
       }).join("")
     : `<div class="empty">Aucune pesée enregistrée. Ajoute ton poids du matin depuis l'onglet Jour.</div>`;
 
+  /* — assistant Claude — */
+  const aiKeyEl = $("#pAiKey");
+  if (aiKeyEl && document.activeElement !== aiKeyEl) aiKeyEl.value = aiKey();
+  const aiModelEl = $("#pAiModel");
+  if (aiModelEl) {
+    aiModelEl.innerHTML = AI_MODELS.map(m => `<option value="${m.id}">${esc(m.label)}</option>`).join("");
+    aiModelEl.value = aiModel();
+  }
+  const aiStatusEl = $("#pAiStatus");
+  if (aiStatusEl) aiStatusEl.textContent = aiKeyStatus();
+
   $("#appVersion").textContent = `Health Tracker ${APP_VERSION} · ${DB.foods.length} aliments · ${DB.dishes.length} plats · ${Object.keys(DB.days).length} jours enregistrés`;
 }
 
@@ -3341,6 +3627,17 @@ function wire() {
   $("#segMet").addEventListener("click", e => {
     const b = e.target.closest("[data-net]"); if (!b) return;
     DB.settings.metNet = b.dataset.net === "1"; persist(); renderProfil();
+  });
+  const pAiKeyEl = $("#pAiKey");
+  if (pAiKeyEl) pAiKeyEl.addEventListener("input", () => {
+    setAiKey(pAiKeyEl.value.trim());
+    const st = $("#pAiStatus"); if (st) st.textContent = aiKeyStatus();
+  });
+  const pAiModelEl = $("#pAiModel");
+  if (pAiModelEl) pAiModelEl.addEventListener("change", () => {
+    DB.settings.aiModel = pAiModelEl.value;
+    DB.settings = sanitizeSettings(DB.settings);
+    persist();
   });
   $("#weightHistory").addEventListener("click", e => {
     const b = e.target.closest("[data-delw]"); if (!b) return;
