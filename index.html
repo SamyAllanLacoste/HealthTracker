@@ -769,7 +769,7 @@ table.data td.neg{color:var(--critical)}
 /* ============================================================================
    HEALTH TRACKER — noyau : stockage, modèle, moteur de calcul
    ========================================================================== */
-const APP_VERSION = "1.6.0";
+const APP_VERSION = "1.7.0";
 const KJ_PER_KCAL = 4.184;
 
 /* ---------- utilitaires ---------- */
@@ -1625,11 +1625,11 @@ function openAddPicker(mealTypeId) {
     if (tab === "plats") {
       return DB.dishes
         .filter(d => d && (!q || String(d.name || "").toLowerCase().includes(q)))
-        .sort((a, b) => (b.lastUsed || 0) - (a.lastUsed || 0));
+        .sort((a, b) => String(a.name || "").localeCompare(String(b.name || ""), "fr", { sensitivity: "base" }));
     }
     return DB.foods
       .filter(f => !q || foodName(f).toLowerCase().includes(q))
-      .sort((a, b) => (b.uses || 0) - (a.uses || 0) || foodName(a).localeCompare(foodName(b), "fr"))
+      .sort((a, b) => foodName(a).localeCompare(foodName(b), "fr", { sensitivity: "base" }))
       .slice(0, 200);
   }
   function listHTML() {
@@ -1937,7 +1937,7 @@ function cloneItems(items) {
 function openFoodPicker(onPick) {
   let q = "";
   const matches = () => DB.foods.filter(f => !q || foodName(f).toLowerCase().includes(q))
-    .sort((a, b) => (b.uses || 0) - (a.uses || 0) || foodName(a).localeCompare(foodName(b), "fr")).slice(0, 200);
+    .sort((a, b) => foodName(a).localeCompare(foodName(b), "fr", { sensitivity: "base" })).slice(0, 200);
   const list = () => {
     const arr = matches();
     if (!arr.length) return `<div class="empty">Aucun aliment ne correspond.<br>Crée-le avec « Nouvel aliment ».</div>`;
@@ -2172,7 +2172,7 @@ function renderBiblio() {
 
   if (UI.bibTab === "plats") {
     const arr = DB.dishes.filter(d => d && (!q || String(d.name || "").toLowerCase().includes(q)))
-      .sort((a, b) => (b.lastUsed || 0) - (a.lastUsed || 0));
+      .sort((a, b) => String(a.name || "").localeCompare(String(b.name || ""), "fr", { sensitivity: "base" }));
     list.innerHTML = arr.length ? arr.map(d => {
       const t = sumTotals(d.items);
       const g = d.items.reduce((a, b) => a + num(b.grams), 0);
