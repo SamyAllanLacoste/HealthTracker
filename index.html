@@ -812,7 +812,7 @@ table.data td.neg{color:var(--critical)}
 /* ============================================================================
    HEALTH TRACKER — noyau : stockage, modèle, moteur de calcul
    ========================================================================== */
-const APP_VERSION = "1.8.0";
+const APP_VERSION = "1.9.0";
 const KJ_PER_KCAL = 4.184;
 
 /* ---------- utilitaires ---------- */
@@ -1443,7 +1443,8 @@ const ICON = {
   trash: '<svg viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>',
   edit: '<svg viewBox="0 0 24 24"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>',
   copy: '<svg viewBox="0 0 24 24"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>',
-  spark: '<svg viewBox="0 0 24 24"><path d="M12 3v4M12 17v4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M3 12h4M17 12h4M5.6 18.4l2.8-2.8M15.6 8.4l2.8-2.8"/></svg>'
+  spark: '<svg viewBox="0 0 24 24"><path d="M12 3v4M12 17v4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M3 12h4M17 12h4M5.6 18.4l2.8-2.8M15.6 8.4l2.8-2.8"/></svg>',
+  cam: '<svg viewBox="0 0 24 24"><path d="M3 8a2 2 0 0 1 2-2h2l1.4-2h7.2L19 6h2a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/><circle cx="12" cy="13" r="3.4"/></svg>'
 };
 
 /* ---------- confirmation ---------- */
@@ -2096,12 +2097,116 @@ function propagateFood(foodId, data, toDishes, toDays) {
 /* ---------- formulaire aliment ----------
    opts.standalone : ne touche pas à la bibliothèque, renvoie seulement les valeurs
    (cas d'un aliment saisi à la volée, sans fiche enregistrée)                        */
+/* ============================================================================
+   SCAN D'ÉTIQUETTE — OCR embarqué (Tesseract.js)
+   Lecture du tableau de valeurs nutritionnelles depuis une photo, 100 % sur
+   l'appareil. Le moteur est téléchargé à la première utilisation puis mis en
+   cache par le service worker : les scans suivants fonctionnent hors ligne.
+   ========================================================================== */
+const OCR_MAIN = "https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js";
+const OCR_LANGPATH = "https://tessdata.projectnaptha.com/4.0.0";
+let _ocrLoad = null;
+
+/* charge le moteur une seule fois ; rejette proprement si hors ligne au 1er usage */
+function ocrEngine() {
+  if (window.Tesseract) return Promise.resolve(window.Tesseract);
+  if (_ocrLoad) return _ocrLoad;
+  _ocrLoad = new Promise((res, rej) => {
+    const s = document.createElement("script");
+    s.src = OCR_MAIN; s.async = true;
+    s.onload = () => window.Tesseract ? res(window.Tesseract) : rej({ kind: "engine" });
+    s.onerror = () => { _ocrLoad = null; rej({ kind: "offline" }); };
+    document.head.appendChild(s);
+  });
+  return _ocrLoad;
+}
+
+/* prétraitement : réduction, niveaux de gris et contraste — l'OCR y gagne nettement */
+function ocrPrepare(file) {
+  return new Promise((res, rej) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      const MAX = 1600;
+      let w = img.naturalWidth, h = img.naturalHeight;
+      const k = Math.min(1, MAX / Math.max(w, h));
+      w = Math.max(1, Math.round(w * k)); h = Math.max(1, Math.round(h * k));
+      const cv = document.createElement("canvas"); cv.width = w; cv.height = h;
+      const ctx = cv.getContext("2d"); ctx.drawImage(img, 0, 0, w, h);
+      try {
+        const im = ctx.getImageData(0, 0, w, h), a = im.data;
+        for (let i = 0; i < a.length; i += 4) {
+          let g = 0.299 * a[i] + 0.587 * a[i + 1] + 0.114 * a[i + 2];
+          g = (g - 128) * 1.3 + 128;                 /* contraste */
+          g = g < 0 ? 0 : g > 255 ? 255 : g;
+          a[i] = a[i + 1] = a[i + 2] = g;
+        }
+        ctx.putImageData(im, 0, 0);
+      } catch (e) { /* canvas « taint » improbable ici : on garde l'image brute */ }
+      URL.revokeObjectURL(url);
+      res(cv);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); rej({ kind: "image" }); };
+    img.src = url;
+  });
+}
+
+async function ocrScanLabel(file, onProgress) {
+  const T = await ocrEngine();
+  const canvas = await ocrPrepare(file);
+  const { data } = await T.recognize(canvas, "fra", {
+    langPath: OCR_LANGPATH,
+    logger: m => { if (onProgress && m && m.status === "recognizing text") onProgress(m.progress || 0); }
+  });
+  return parseNutrition((data && data.text) || "");
+}
+
+/* extrait kcal + macros /100 g d'un texte d'étiquette (tolérant au bruit OCR) */
+function parseNutrition(text) {
+  const out = { kcal100: null, prot100: null, gluc100: null, lip100: null, fib100: null, raw: text };
+  if (!text) return out;
+  const strip = s => s.normalize("NFD").replace(/[̀-ͯ]/g, "");
+  const norm = strip(text).toLowerCase().replace(/(\d)[  ](\d{3})(?!\d)/g, "$1$2");
+  const lines = norm.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  const firstNum = s => { const m = s.match(/(\d+(?:[.,]\d+)?)/); return m ? parseFloat(m[1].replace(",", ".")) : null; };
+
+  let kcal = null, kj = null;
+  for (const l of lines) {
+    if (kcal == null) { const m = l.match(/(\d+(?:[.,]\d+)?)\s*k\s*cal/); if (m) kcal = parseFloat(m[1].replace(",", ".")); }
+    if (kj == null)   { const m = l.match(/(\d+(?:[.,]\d+)?)\s*kj/);      if (m) kj   = parseFloat(m[1].replace(",", ".")); }
+  }
+  if (kcal == null && kj != null) kcal = kj / KJ_PER_KCAL;
+  out.kcal100 = kcal == null ? null : Math.round(kcal);
+
+  const grab = re => {
+    for (const l of lines) { const i = l.search(re); if (i < 0) continue; const v = firstNum(l.slice(i)); if (v != null) return v; }
+    return null;
+  };
+  out.prot100 = grab(/protein/);
+  out.gluc100 = grab(/glucid|carbohydrate/);
+  out.lip100  = grab(/lipid|graisse|matieres? grasse|\bfat\b/);
+  out.fib100  = grab(/fibr/);
+  return out;
+}
+
+/* surbrillance passagère d'un champ pré-rempli par le scan */
+function ocrFlash(el) {
+  if (!el) return;
+  el.style.transition = "box-shadow .25s, background-color .25s";
+  el.style.boxShadow = "0 0 0 2px var(--green)";
+  el.style.backgroundColor = "var(--green-100)";
+  setTimeout(() => { el.style.boxShadow = ""; el.style.backgroundColor = ""; }, 1100);
+}
+
 function openFoodForm(existing, onSaved, opts) {
   opts = opts || {};
   const inLibrary = !opts.standalone && !!(existing && existing.id && DB.foods.some(x => x.id === existing.id));
   const refs = inLibrary ? countFoodRefs(existing.id) : { dish: 0, day: 0 };
   const f = existing || { name: "", kcal100: "", prot100: "", gluc100: "", lip100: "", fib100: "" };
   const html = `
+    <button class="btn block ghost" id="fScan" type="button" style="margin-bottom:6px">${ICON.cam} ${existing && existing.id ? "Rafraîchir depuis une étiquette" : "Scanner l'étiquette"}</button>
+    <input type="file" id="fScanInput" accept="image/*" capture="environment" hidden>
+    <div class="hint" id="fScanHint" style="display:none;margin:0 2px 14px"></div>
     <div class="field"><label for="fName">Nom de l'aliment</label>
       <input type="text" id="fName" value="${esc(f.name)}" placeholder="ex. Riz basmati cuit" autocomplete="off"></div>
     <div class="field">
@@ -2190,6 +2295,46 @@ function openFoodForm(existing, onSaved, opts) {
       }
       [en, $("#fP", root), $("#fG", root), $("#fL", root)].forEach(i => i.oninput = check);
       check();
+
+      /* — scan d'étiquette : caméra -> OCR -> pré-remplissage des champs — */
+      const scanBtn = $("#fScan", root), scanInput = $("#fScanInput", root), scanHint = $("#fScanHint", root);
+      const hint = (txt, tone) => {
+        scanHint.style.display = "block";
+        scanHint.style.color = tone === "warn" ? "var(--critical)" : tone === "ok" ? "var(--green-dark)" : "var(--muted)";
+        scanHint.textContent = txt;
+      };
+      scanBtn.onclick = () => scanInput.click();
+      scanInput.onchange = async () => {
+        const file = scanInput.files && scanInput.files[0];
+        scanInput.value = "";
+        if (!file) return;
+        scanBtn.disabled = true;
+        const label0 = scanBtn.innerHTML;
+        scanBtn.innerHTML = "Lecture en cours…";
+        hint("Préparation du lecteur…");
+        try {
+          const r = await ocrScanLabel(file, p => hint("Lecture de l'étiquette… " + Math.round(p * 100) + " %"));
+          /* forcer l'affichage en kcal avant de poser l'énergie */
+          $$("button", seg).forEach(x => x.setAttribute("aria-pressed", String(x.dataset.u === "kcal")));
+          let n = 0;
+          const put = (sel, v) => { if (v != null && isFinite(v)) { const el = $(sel, root); el.value = v; ocrFlash(el); n++; } };
+          put("#fEnergy", r.kcal100); put("#fP", r.prot100); put("#fG", r.gluc100); put("#fL", r.lip100); put("#fF", r.fib100);
+          check();
+          if (n) hint(n + " valeur" + (n > 1 ? "s" : "") + " lue" + (n > 1 ? "s" : "") + " — vérifie-les avant d'enregistrer.", "ok");
+          else hint("Étiquette non reconnue. Reprends la photo bien à plat, nette et cadrée sur le tableau, ou saisis les valeurs à la main.", "warn");
+        } catch (err) {
+          const k = err && err.kind;
+          hint(k === "offline"
+            ? "Lecteur indisponible hors connexion. La toute première utilisation nécessite Internet ; ensuite le scan fonctionne hors ligne."
+            : k === "image"
+            ? "Image illisible. Réessaie avec une autre photo."
+            : "Lecture impossible. Réessaie avec une photo plus nette, ou saisis les valeurs à la main.", "warn");
+        } finally {
+          scanBtn.disabled = false;
+          scanBtn.innerHTML = label0;
+        }
+      };
+
       if (!existing) setTimeout(() => $("#fName", root).focus(), 120);
     }
   });
